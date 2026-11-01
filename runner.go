@@ -64,16 +64,13 @@ func (r *Runner) catchUp(t *Turn, emit func(Event) error) error {
 	if marker == nil && (previous == "" || previous == t.Backend) {
 		return nil
 	}
-	boundary := HandoverBoundary{After: after, Budget: r.budget}
+	boundary := HandoverBoundary{From: previous, To: t.Backend, After: after, Budget: r.budget}
 	if marker != nil {
-		if err := json.Unmarshal(marker.Input, &boundary); err != nil {
+		if boundary, err = HandoverOf(*marker); err != nil {
 			return err
 		}
-	} else {
-		data, _ := json.Marshal(boundary)
-		if err := emit(Event{Kind: Handover, Action: t.Backend, Text: previous + " -> " + t.Backend, Input: data}); err != nil {
-			return err
-		}
+	} else if err := emit(boundary.event()); err != nil {
+		return err
 	}
 	t.HandoverBudget = boundary.Budget
 	for _, e := range events {
@@ -84,10 +81,35 @@ func (r *Runner) catchUp(t *Turn, emit func(Event) error) error {
 	return nil
 }
 
-// HandoverBoundary records the unseen range and host budget for replay.
+// HandoverBoundary is what a handover event records: the backend that
+// held the session, the one that takes it, the last event the taking
+// backend had seen, and the host's byte budget for the catch-up. A retry of
+// the turn reads it back, so it sees the same range and budget.
 type HandoverBoundary struct {
-	After  int64 `json:"after"`
-	Budget int   `json:"budget"`
+	From   string `json:"from"`
+	To     string `json:"to"`
+	After  int64  `json:"after"`
+	Budget int    `json:"budget"`
+}
+
+// HandoverOf returns the boundary a handover event records. It fails for an
+// event of another kind. Read a handover only through it: the event's
+// encoding belongs to this package.
+func HandoverOf(e Event) (HandoverBoundary, error) {
+	var b HandoverBoundary
+	if e.Kind != Handover {
+		return b, fmt.Errorf("faden: event %d is a %s, not a handover", e.Seq, e.Kind)
+	}
+	if err := json.Unmarshal(e.Input, &b); err != nil {
+		return b, fmt.Errorf("faden: handover %d: %w", e.Seq, err)
+	}
+	return b, nil
+}
+
+// event encodes the boundary as a handover event. Text is for people only.
+func (b HandoverBoundary) event() Event {
+	data, _ := json.Marshal(b) // plain strings and numbers cannot fail
+	return Event{Kind: Handover, Action: b.To, Text: b.From + " -> " + b.To, Input: data}
 }
 
 // Submission is what a host asks the runner to run.

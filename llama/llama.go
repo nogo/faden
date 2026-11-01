@@ -128,22 +128,27 @@ func rebuild(events []faden.Event) (*transcript, error) {
 // rebuild replays native llama messages and portable context at each handover.
 func (b *Backend) rebuild(events []faden.Event) (*transcript, error) {
 	var native []faden.Event
+	// Before its first handover, the session belongs to that handover's From.
 	active := true
 	for _, e := range events {
 		if e.Kind == faden.Handover {
-			active = strings.HasPrefix(e.Text, b.cfg.Name+" -> ")
+			boundary, err := faden.HandoverOf(e)
+			if err != nil {
+				return nil, fmt.Errorf("llama: %w", err)
+			}
+			active = boundary.From == b.cfg.Name
 			break
 		}
 	}
 	for i, e := range events {
 		if e.Kind == faden.Handover {
-			active = e.Action == b.cfg.Name
+			boundary, err := faden.HandoverOf(e)
+			if err != nil {
+				return nil, fmt.Errorf("llama: %w", err)
+			}
+			active = boundary.To == b.cfg.Name
 			if !active {
 				continue
-			}
-			var boundary faden.HandoverBoundary
-			if err := json.Unmarshal(e.Input, &boundary); err != nil {
-				return nil, fmt.Errorf("llama: handover %d: %w", e.Seq, err)
 			}
 			var unseen []faden.Event
 			for _, prior := range events[:i] {
