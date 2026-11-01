@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/nogo/faden"
@@ -18,6 +19,9 @@ type Storage struct {
 	// Tear leaves a half-written record at the end of the storage, as a
 	// crash in the middle of a write does. Nil if the store cannot tear.
 	Tear func()
+	// InterruptCreate leaves an empty or torn first record for session.
+	// Nil if session creation is atomic.
+	InterruptCreate func(session string, torn bool)
 }
 
 // Run runs the suite. newStorage returns a fresh Storage for each test.
@@ -196,6 +200,42 @@ func Run(t *testing.T, newStorage func(t *testing.T) Storage) {
 			t.Fatalf("seq after reopen = %d, want 2", next.Seq)
 		}
 	})
+
+	for _, torn := range []bool{false, true} {
+		name := "EmptySessionIsAbsentAtOpen"
+		if torn {
+			name = "TornFirstRecordIsAbsentAtOpen"
+		}
+		t.Run(name, func(t *testing.T) {
+			st := newStorage(t)
+			if st.InterruptCreate == nil {
+				t.Skip("session creation is atomic")
+			}
+			s := st.Open()
+			want, err := s.SubmitTurn(ctx, turn("r1", "s1"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			st.InterruptCreate("s", torn)
+			s = st.Open()
+			defer s.Close()
+			if _, err := s.Session(ctx, "s"); !errors.Is(err, faden.ErrNotFound) {
+				t.Fatalf("interrupted session err = %v, want ErrNotFound", err)
+			}
+			if sess, err := s.Session(ctx, "s1"); err != nil || sess.ID != "s1" || sess.Backend != "a" {
+				t.Fatalf("valid session = %+v, %v", sess, err)
+			}
+			if got, err := s.Turn(ctx, "r1"); err != nil || !reflect.DeepEqual(got, want) {
+				t.Fatalf("valid turn = %+v, %v; want %+v", got, err, want)
+			}
+			if _, err := s.SubmitTurn(ctx, turn("r2", "s")); err != nil {
+				t.Fatalf("create interrupted session again: %v", err)
+			}
+		})
+	}
 
 	t.Run("TornLastWriteIsCutAtOpen", func(t *testing.T) {
 		st := newStorage(t)

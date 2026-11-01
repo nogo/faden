@@ -15,6 +15,15 @@ func TestConformance(t *testing.T) {
 	storetest.Run(t, func(t *testing.T) storetest.Storage {
 		dir := t.TempDir()
 		return storetest.Storage{
+			InterruptCreate: func(session string, torn bool) {
+				var data []byte
+				if torn {
+					data = []byte(`{"type":"session","session":`)
+				}
+				if err := os.WriteFile(filepath.Join(dir, session+".jsonl"), data, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
 			Open: func() faden.Store {
 				s, err := jsonl.Open(dir)
 				if err != nil {

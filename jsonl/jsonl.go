@@ -98,6 +98,15 @@ func (s *Store) load(name string) error {
 			return fmt.Errorf("jsonl: cut torn line of %s: %w", name, err)
 		}
 	}
+	if good == 0 {
+		if err := f.Close(); err != nil {
+			return fmt.Errorf("jsonl: close interrupted session %s: %w", name, err)
+		}
+		if err := os.Remove(name); err != nil {
+			return fmt.Errorf("jsonl: remove interrupted session %s: %w", name, err)
+		}
+		return nil
+	}
 	sess := &session{file: f, size: good}
 	for n, line := range bytes.Split(data[:good], []byte{'\n'}) {
 		if len(line) == 0 {
