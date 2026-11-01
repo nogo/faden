@@ -241,6 +241,25 @@ func run2(t *testing.T, store *jsonl.Store, b *llama.Backend) faden.Turn {
 	return got
 }
 
+// A crash after the turn started but before anything was stored must not
+// lose the turn: its input is in the store.
+func TestTurnKilledBeforeFirstEventContinuesFromStoredInput(t *testing.T) {
+	dir := t.TempDir()
+	store := openStore(t, dir)
+	ctx := t.Context()
+	store.SubmitTurn(ctx, faden.Turn{RequestID: "r1", Session: "s1", Input: "go", Backend: "llama"})
+	store.SaveTurn(ctx, faden.Turn{RequestID: "r1", Session: "s1", Input: "go", Backend: "llama", Status: faden.Running, Attempts: 1})
+	rec, srv := newReplay(t, "final.json")
+	b, _ := llama.New(llama.Config{URL: srv.URL, Store: store})
+	if got := run2(t, store, b); got.Status != faden.Done {
+		t.Fatalf("turn = %+v", got)
+	}
+	msgs := rec.sent()[0].Messages
+	if len(msgs) != 1 || msgs[0].Role != "user" || msgs[0].Content != "go" {
+		t.Fatalf("messages = %+v", msgs)
+	}
+}
+
 func TestCallNeverStoredRunsEvenIfUnsafe(t *testing.T) {
 	dir := t.TempDir()
 	seed(t, dir, "add", `{"a":1,"b":1}`)

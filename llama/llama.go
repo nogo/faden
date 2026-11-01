@@ -219,15 +219,6 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, _ json.RawMessage, emit
 	if err != nil {
 		return nil, fmt.Errorf("llama: read session %s: %w", t.Session, err)
 	}
-	if t.Input != "" {
-		e := faden.Event{Kind: faden.UserMessage, Text: t.Input, RequestID: t.RequestID}
-		if err := emit(e); err != nil {
-			return nil, fmt.Errorf("llama: store input: %w", err)
-		}
-		events = append(events, e)
-	} else if !hasInput(events, t.RequestID) {
-		return nil, errors.New("llama: the turn's input was never stored; send a new turn")
-	}
 	tr, err := b.rebuild(events)
 	if err != nil {
 		return nil, err
@@ -272,15 +263,6 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, _ json.RawMessage, emit
 		}
 		tr.messages = append(tr.messages, answer)
 	}
-}
-
-func hasInput(events []faden.Event, requestID string) bool {
-	for _, e := range events {
-		if e.Kind == faden.UserMessage && e.RequestID == requestID {
-			return true
-		}
-	}
-	return false
 }
 
 // execute stores a call, runs it unless it was interrupted, and stores the result.

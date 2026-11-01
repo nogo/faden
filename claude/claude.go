@@ -141,9 +141,6 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, raw json.RawMessage, em
 	}
 	input, _ := json.Marshal(map[string]any{"type": "user", "message": map[string]string{"role": "user", "content": prompt}})
 	input = append(input, '\n')
-	if err := emit(faden.Event{Kind: faden.UserMessage, Text: t.Input}); err != nil {
-		return nil, err
-	}
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	reader, writer := io.Pipe()

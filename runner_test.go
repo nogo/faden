@@ -73,7 +73,7 @@ func TestSubmitRunsTurnAndStoresCursorAndEvents(t *testing.T) {
 	}
 	events, _ := store.Events(t.Context(), "s1", 0)
 	sess, _ := store.Session(t.Context(), "s1")
-	if len(events) != 1 || events[0].Text != "re: hello" || events[0].RequestID != "r1" || string(sess.Cursors["fake"]) != `{"id":"c1"}` {
+	if len(events) != 2 || events[0].Kind != faden.UserMessage || events[0].Text != "hello" || events[1].Text != "re: hello" || events[1].RequestID != "r1" || string(sess.Cursors["fake"]) != `{"id":"c1"}` {
 		t.Fatalf("events = %+v, session = %+v", events, sess)
 	}
 }
@@ -232,7 +232,7 @@ func TestCrashChildProcess(t *testing.T) {
 	}
 	store := openStore(t, dir)
 	b := &fake{run: func(ctx context.Context, _ faden.Turn, _ json.RawMessage, emit func(faden.Event) error) (json.RawMessage, error) {
-		emit(faden.Event{Kind: faden.UserMessage, Text: "one"})
+		emit(faden.Event{Kind: faden.AssistantMessage, Text: "one"})
 		emit(faden.Event{Kind: faden.AssistantMessage, Text: "two"})
 		os.Stdout.WriteString("ready\n")
 		<-ctx.Done()
@@ -286,7 +286,8 @@ func TestKilledTurnFinishesAfterRestart(t *testing.T) {
 		t.Fatalf("turn = %+v, sent %q", got, sent)
 	}
 	events, _ := store.Events(t.Context(), "s1", 0)
-	if len(events) != 2 || events[0].Text != "one" || events[1].Text != "two" {
+	// The input is stored once; the continuation prompt is not stored as a user message.
+	if len(events) != 3 || events[0].Kind != faden.UserMessage || events[0].Text != "work" || events[1].Text != "one" || events[2].Text != "two" {
 		t.Fatalf("events = %+v", events)
 	}
 	unfinished, _ := store.Unfinished(t.Context())

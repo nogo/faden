@@ -278,6 +278,26 @@ func (r *Runner) finish(t Turn, status Status, msg string) error {
 	return nil
 }
 
+// recordInput stores the turn's user message unless an earlier attempt did.
+// The runner owns it, not the backend: the input is in the store from
+// Submit on, so a crash before the first event cannot lose it, and a
+// continuation prompt never enters the thread as something the user said.
+// It comes after any handover event, so a backend rebuilding its history
+// finds the handover before the request. It also marks which backend ran
+// the turn, which catchUp needs even when the backend emits nothing.
+func (r *Runner) recordInput(t Turn, emit func(Event) error) error {
+	events, err := r.store.Events(r.ctx, t.Session, 0)
+	if err != nil {
+		return err
+	}
+	for _, e := range events {
+		if e.RequestID == t.RequestID && e.Kind == UserMessage {
+			return nil
+		}
+	}
+	return emit(Event{Kind: UserMessage, Text: t.Input})
+}
+
 // run runs one turn. A running turn already has its attempt raised by Open.
 func (r *Runner) run(t Turn) error {
 	if t.Status == Pending {
@@ -301,42 +321,23 @@ func (r *Runner) run(t Turn) error {
 			send.Input = ""
 		}
 	}
-	emitted := false
 	emit := func(e Event) error {
 		e.Session, e.RequestID = t.Session, t.RequestID
 		if e.Time.IsZero() {
 			e.Time = time.Now().UTC()
 		}
 		_, err := r.store.AppendEvent(r.ctx, e)
-		if err == nil {
-			emitted = true
-		}
 		return err
 	}
 	if err := r.catchUp(&send, emit); err != nil {
 		return fmt.Errorf("faden: handover turn %s: %w", t.RequestID, err)
 	}
+	if err := r.recordInput(t, emit); err != nil {
+		return fmt.Errorf("faden: record input of turn %s: %w", t.RequestID, err)
+	}
 	cursor, runErr := backend.Run(r.ctx, send, session.Cursors[t.Backend], emit)
 	if r.ctx.Err() != nil {
 		return nil // closed: the turn stays running for the next Open
-	}
-	if !emitted {
-		// Even a silent backend must leave evidence of its participation.
-		events, err := r.store.Events(r.ctx, t.Session, 0)
-		if err != nil {
-			return fmt.Errorf("faden: read turn %s: %w", t.RequestID, err)
-		}
-		for _, e := range events {
-			if e.RequestID == t.RequestID {
-				emitted = true
-				break
-			}
-		}
-		if !emitted {
-			if err := emit(Event{Kind: TurnEnded}); err != nil {
-				return fmt.Errorf("faden: record turn %s: %w", t.RequestID, err)
-			}
-		}
 	}
 	if len(cursor) > 0 {
 		if err := r.store.SetCursor(r.ctx, t.Session, t.Backend, json.RawMessage(cursor)); err != nil {

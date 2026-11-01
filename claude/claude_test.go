@@ -69,15 +69,16 @@ func TestTurns(t *testing.T) {
 	if !strings.Contains(string(args), "--session-id\n"+c.SessionID) || strings.Contains(string(args), "environment-only") {
 		t.Fatalf("args: %s", args)
 	}
-	want := []faden.Kind{faden.UserMessage, faden.AssistantMessage, faden.ToolCall, faden.ToolResult, faden.AssistantMessage, faden.TurnEnded}
+	// The runner stores the user message; the backend stores only what Claude says and does.
+	want := []faden.Kind{faden.AssistantMessage, faden.ToolCall, faden.ToolResult, faden.AssistantMessage, faden.TurnEnded}
 	var kinds []faden.Kind
 	for _, e := range events {
 		kinds = append(kinds, e.Kind)
-		if e.Kind != faden.UserMessage && !json.Valid(e.Native) {
+		if !json.Valid(e.Native) {
 			t.Fatalf("native: %q", e.Native)
 		}
 	}
-	if !reflect.DeepEqual(kinds, want) || events[2].Action != "cat greeting.txt" || events[3].Output != "hello" {
+	if !reflect.DeepEqual(kinds, want) || events[1].Action != "cat greeting.txt" || events[2].Output != "hello" {
 		t.Fatalf("events: %+v", events)
 	}
 	_, err = b.Run(t.Context(), faden.Turn{Session: "s", Input: "Continue where you left off."}, raw, emit)

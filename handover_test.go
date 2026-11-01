@@ -207,7 +207,8 @@ func TestHandoverAfterSilentBackend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 2 || events[1].Kind != faden.Handover || events[1].Action != "two" {
+	// A silent backend's turn is still marked by its stored user message.
+	if len(events) != 3 || events[1].Kind != faden.Handover || events[1].Action != "two" {
 		t.Fatalf("%+v", events)
 	}
 }

@@ -29,7 +29,8 @@
 - **llama.cpp:** faden's own loop against an OpenAI-compatible `/v1/chat/completions`, ported from invest's analyst. Each model answer is stored; a tool call is stored before it runs and its result after. On continue, the messages are rebuilt from the events. A stored call without a result runs again only if its tool is marked safe; otherwise its result says it was interrupted.
 - **llama.cpp tools** are the host's Go functions plus `bash` (run through the runtime, never safe to replay) and `read_thread`.
 - **`faden.Runtime` runs one command to its end** and returns output and exit code; a non-zero exit is a result, not an error. `faden.Local` runs it through `os/exec` in a directory and kills the process group when stopped.
-- **llama.cpp stores the user message itself** on the first attempt. A continuation that finds no stored user message for its turn fails with "send a new turn", because the runner no longer holds the input then.
+- ~~**llama.cpp stores the user message itself** on the first attempt. A continuation that finds no stored user message for its turn fails with "send a new turn", because the runner no longer holds the input then.~~ *Changed 2026-11-02: a crash before that event failed a turn whose input was in the store (forge review of #1).*
+- **The runner stores each turn's user message,** once, after any handover event and before the backend runs. A backend stores only what its agent says and does. The input is in the store from `Submit` on, so no crash can lose it, and a continuation prompt never enters the thread as something the user said.
 - **Codex is parked** until Claude and llama.cpp work. sidenote's `codex app-server` adapter is the starting point.
 
 ### Runtimes
