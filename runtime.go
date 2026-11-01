@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"syscall"
 	"time"
@@ -35,6 +36,16 @@ type Local struct {
 	Dir string
 	// Env replaces the inherited environment when non-nil.
 	Env []string
+}
+
+// WithEnv returns a copy of l that also sets the given NAME=value entries.
+func (l Local) WithEnv(extra ...string) Local {
+	env := l.Env
+	if env == nil {
+		env = os.Environ()
+	}
+	l.Env = append(append([]string(nil), env...), extra...)
+	return l
 }
 
 // Run implements Runtime.

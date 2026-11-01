@@ -303,3 +303,36 @@ func TestRunnerContinuesStoredTurn(t *testing.T) {
 		t.Fatalf("cursor: %+v", c)
 	}
 }
+
+type threadGrant struct{ revoked bool }
+
+func (g *threadGrant) Grant(string) (string, error) { return "invented-token", nil }
+func (g *threadGrant) Revoke(string)                { g.revoked = true }
+func (g *threadGrant) Config() []byte {
+	return []byte(`{"mcpServers":{"faden":{"type":"http","url":"http://127.0.0.1:1/mcp","headers":{"Authorization":"Bearer ${FADEN_MCP_TOKEN}"}}}}`)
+}
+
+func TestThreadsTokenOnlyInEnvironment(t *testing.T) {
+	dir := t.TempDir()
+	program := "#!/bin/sh\nprintf '%s\\n' \"$@\" > args\ncat > input\nwhile [ $# -gt 0 ]; do [ \"$1\" = --mcp-config ] && cp \"$2\" config; shift; done\nprintf '%s' \"$FADEN_MCP_TOKEN\" > token\ncat fixture\n"
+	os.WriteFile(filepath.Join(dir, "claude"), []byte(program), 0700)
+	os.WriteFile(filepath.Join(dir, "fixture"), []byte(stream), 0600)
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	grant := &threadGrant{}
+	b, err := New(Config{Runtime: faden.Local{Dir: dir}, Store: &checkpoint{}, Threads: grant})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Run(t.Context(), faden.Turn{Session: "s", Input: "hi"}, nil, func(faden.Event) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	token, _ := os.ReadFile(filepath.Join(dir, "token"))
+	args, _ := os.ReadFile(filepath.Join(dir, "args"))
+	config, _ := os.ReadFile(filepath.Join(dir, "config"))
+	if string(token) != "invented-token" || strings.Contains(string(args), "invented-token") || strings.Contains(string(config), "invented-token") {
+		t.Fatalf("token %q args %q config %q", token, args, config)
+	}
+	if !strings.Contains(string(args), "--mcp-config") || !strings.Contains(string(config), "${FADEN_MCP_TOKEN}") || !grant.revoked {
+		t.Fatalf("args %q config %q revoked %v", args, config, grant.revoked)
+	}
+}

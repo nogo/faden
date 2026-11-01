@@ -11,10 +11,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/nogo/faden"
 	"github.com/nogo/faden/handover"
+	"github.com/nogo/faden/mcp"
 )
 
 // Runtime streams a CLI's stdout while feeding its stdin.
@@ -28,6 +30,13 @@ type Store interface {
 	SetCursor(context.Context, string, string, json.RawMessage) error
 }
 
+// Threads grants a session access to read_thread. *mcp.Server implements it.
+type Threads interface {
+	Grant(session string) (token string, err error)
+	Revoke(session string)
+	Config() []byte
+}
+
 // Config wires the backend to the host's runtime and store.
 type Config struct {
 	Runtime Runtime
@@ -36,6 +45,10 @@ type Config struct {
 	Name string
 	// Args contains host-supplied permission flags, never credentials.
 	Args []string
+	// Threads, if set, lets Claude read the session through read_thread. It
+	// needs Runtime to be a faden.Local: the token reaches Claude through
+	// the process environment and the config file is written on the host.
+	Threads Threads
 }
 
 // Backend implements faden.Backend for Claude Code.
@@ -96,6 +109,32 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, raw json.RawMessage, em
 		argv = append(argv, "--model", t.Model)
 	}
 	argv = append(argv, b.cfg.Args...)
+	runtime := b.cfg.Runtime
+	if b.cfg.Threads != nil {
+		local, ok := runtime.(faden.Local)
+		if !ok {
+			return nil, errors.New("claude: Threads needs a faden.Local runtime")
+		}
+		token, err := b.cfg.Threads.Grant(t.Session)
+		if err != nil {
+			return nil, err
+		}
+		defer b.cfg.Threads.Revoke(t.Session)
+		file, err := os.CreateTemp("", "faden-mcp-*.json")
+		if err != nil {
+			return nil, fmt.Errorf("claude: MCP config: %w", err)
+		}
+		defer os.Remove(file.Name())
+		_, err = file.Write(b.cfg.Threads.Config())
+		if cerr := file.Close(); err == nil {
+			err = cerr
+		}
+		if err != nil {
+			return nil, fmt.Errorf("claude: MCP config: %w", err)
+		}
+		argv = append(argv, "--mcp-config", file.Name())
+		runtime = local.WithEnv(mcp.TokenEnv + "=" + token)
+	}
 	prompt := t.Input
 	if len(t.CatchUp) > 0 {
 		prompt = handover.Block(handover.Select(t.CatchUp, t.Input, t.HandoverBudget)) + "\n" + t.Input
@@ -114,7 +153,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, raw json.RawMessage, em
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		res, err := b.cfg.Runtime.RunStream(runCtx, argv, bytes.NewReader(input), writer)
+		res, err := runtime.RunStream(runCtx, argv, bytes.NewReader(input), writer)
 		writer.CloseWithError(err)
 		done <- outcome{res, err}
 	}()
