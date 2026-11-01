@@ -371,7 +371,7 @@ func TestCrashChildProcess(t *testing.T) {
 	}
 	_, srv := newReplay(t, "bash_call.json")
 	store := openStore(t, dir)
-	b, _ := llama.New(llama.Config{URL: srv.URL, Store: store, Runtime: faden.Local{Dir: dir}})
+	b, _ := llama.New(llama.Config{URL: srv.URL, Store: store, Runtime: faden.Local{PIDDir: dir, Dir: dir}})
 	r, err := faden.Open(store, map[string]faden.Backend{"llama": b})
 	if err != nil {
 		t.Fatal(err)
@@ -415,7 +415,7 @@ func TestKilledBetweenBashCallAndResultDoesNotRunBashAgain(t *testing.T) {
 	}
 
 	rec, srv := newReplay(t, "final.json")
-	b, _ := llama.New(llama.Config{URL: srv.URL, Store: store, Runtime: faden.Local{Dir: dir}})
+	b, _ := llama.New(llama.Config{URL: srv.URL, Store: store, Runtime: faden.Local{PIDDir: dir, Dir: dir}})
 	got := run2(t, store, b)
 	if got.Status != faden.Done || got.Attempts != 2 {
 		t.Fatalf("turn = %+v", got)
@@ -441,7 +441,7 @@ func TestBashRunsThroughRuntimeInItsDirectory(t *testing.T) {
 	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
 	os.WriteFile(path, []byte(strings.Join(lines[:len(lines)-1], "\n")+"\n"), 0o600)
 	store2 := openStore(t, seed2)
-	b, _ := llama.New(llama.Config{URL: srv.URL, Store: store2, Runtime: faden.Local{Dir: dir}})
+	b, _ := llama.New(llama.Config{URL: srv.URL, Store: store2, Runtime: faden.Local{PIDDir: dir, Dir: dir}})
 	run2(t, store2, b)
 	events, _ := store2.Events(t.Context(), "s1", 0)
 	for _, e := range events {

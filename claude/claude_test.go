@@ -50,7 +50,7 @@ func TestTurns(t *testing.T) {
 	}
 	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
 	store := &checkpoint{path: filepath.Join(dir, "cursor")}
-	b, err := New(Config{Runtime: faden.Local{Dir: dir, Env: append(os.Environ(), "INVENTED_TOKEN=environment-only")}, Store: store, Args: []string{"--permission-mode", "acceptEdits"}})
+	b, err := New(Config{Runtime: faden.Local{PIDDir: dir, Dir: dir, Env: append(os.Environ(), "INVENTED_TOKEN=environment-only")}, Store: store, Args: []string{"--permission-mode", "acceptEdits"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +149,7 @@ func TestHostHelper(t *testing.T) {
 		return
 	}
 	s := &checkpoint{path: filepath.Join(dir, "cursor")}
-	b, _ := New(Config{Store: s, Runtime: faden.Local{Dir: dir}, Args: []string{"--permission-mode", "bypassPermissions"}})
+	b, _ := New(Config{Store: s, Runtime: faden.Local{PIDDir: dir, Dir: dir}, Args: []string{"--permission-mode", "bypassPermissions"}})
 	input := "Write first.txt containing FIRST. Then run bash sleep 120. Then write second.txt and third.txt containing DONE, one after another. If interrupted and resumed, before using tools say FIRST_FILE_KNOWN if this conversation shows that first.txt was written, or FIRST_FILE_UNKNOWN otherwise."
 	_, err := b.Run(t.Context(), faden.Turn{Session: "s", Input: input}, nil, func(faden.Event) error { return nil })
 	if err != nil {
@@ -169,38 +169,6 @@ func startHost(t *testing.T, dir string) *exec.Cmd {
 	return cmd
 }
 
-func TestClaudeDiesWithHost(t *testing.T) {
-	dir := t.TempDir()
-	program := "#!/bin/sh\necho $$ > claude.pid\nexec sleep 300\n"
-	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(program), 0700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
-	cmd := startHost(t, dir)
-	pid := strings.TrimSpace(string(waitFile(t, filepath.Join(dir, "claude.pid"))))
-	waitFile(t, filepath.Join(dir, "cursor"))
-	if err := cmd.Process.Signal(syscall.SIGKILL); err != nil {
-		t.Fatal(err)
-	}
-	cmd.Wait()
-	deadline := time.NewTimer(10 * time.Second)
-	defer deadline.Stop()
-	tick := time.NewTicker(10 * time.Millisecond)
-	defer tick.Stop()
-	for {
-		data, err := os.ReadFile("/proc/" + pid + "/stat")
-		// A zombie has exited and cannot execute; the container's init owns reaping it.
-		if os.IsNotExist(err) || (err == nil && strings.Contains(string(data), ") Z ")) {
-			break
-		}
-		select {
-		case <-deadline.C:
-			t.Fatalf("Claude process %s remains: %s", pid, data)
-		case <-tick.C:
-		}
-	}
-}
-
 func TestLiveResumeAfterKill(t *testing.T) {
 	if os.Getenv("FADEN_LIVE") != "1" {
 		t.Skip("set FADEN_LIVE=1 to run Claude Code")
@@ -217,7 +185,7 @@ func TestLiveResumeAfterKill(t *testing.T) {
 	cmd.Wait()
 	raw := waitFile(t, filepath.Join(dir, "cursor"))
 	s := &checkpoint{path: filepath.Join(dir, "cursor")}
-	b, _ := New(Config{Store: s, Runtime: faden.Local{Dir: dir}, Args: []string{"--permission-mode", "bypassPermissions"}})
+	b, _ := New(Config{Store: s, Runtime: faden.Local{PIDDir: dir, Dir: dir}, Args: []string{"--permission-mode", "bypassPermissions"}})
 	var answer strings.Builder
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
 	defer cancel()
@@ -274,7 +242,7 @@ func TestRunnerContinuesStoredTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	b, _ := New(Config{Store: store, Runtime: faden.Local{Dir: dir}})
+	b, _ := New(Config{Store: store, Runtime: faden.Local{PIDDir: dir, Dir: dir}})
 	runner, err := faden.Open(store, map[string]faden.Backend{"claude": b})
 	if err != nil {
 		t.Fatal(err)
@@ -320,7 +288,7 @@ func TestThreadsTokenOnlyInEnvironment(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "fixture"), []byte(stream), 0600)
 	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
 	grant := &threadGrant{}
-	b, err := New(Config{Runtime: faden.Local{Dir: dir}, Store: &checkpoint{}, Threads: grant})
+	b, err := New(Config{Runtime: faden.Local{PIDDir: dir, Dir: dir}, Store: &checkpoint{}, Threads: grant})
 	if err != nil {
 		t.Fatal(err)
 	}

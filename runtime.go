@@ -33,7 +33,11 @@ type Runtime interface {
 // directory if empty), with the host's environment. A stopped command is
 // killed together with the processes it started.
 type Local struct {
-	Dir string
+	// PIDDir is an existing, durable directory owned by one sequential command runner.
+	// Reuse it after a restart; never share it with another active Local.
+	// The host must sync its creation and keep it across restarts.
+	PIDDir string
+	Dir    string
 	// Env replaces the inherited environment when non-nil.
 	Env []string
 }
@@ -68,7 +72,26 @@ func (l Local) run(ctx context.Context, argv []string, input io.Reader, output, 
 	if len(argv) == 0 {
 		return Result{}, errors.New("faden: local run: empty command")
 	}
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	path, err := l.pidFile()
+	if err != nil {
+		return Result{}, err
+	}
+	if err := stopLocalLeftover(path); err != nil {
+		return Result{}, fmt.Errorf("faden: local stop leftover: %w", err)
+	}
+	program, err := exec.LookPath(argv[0])
+	if err != nil {
+		return Result{}, fmt.Errorf("faden: local run: %w", err)
+	}
+	gate, release, err := os.Pipe()
+	if err != nil {
+		return Result{}, fmt.Errorf("faden: local gate: %w", err)
+	}
+	defer gate.Close()
+	defer release.Close()
+	args := append([]string{"-c", `read -r ready <&3 && exec 3<&- && exec "$@"`, "sh", program}, argv[1:]...)
+	cmd := exec.CommandContext(ctx, "/bin/sh", args...)
+	cmd.ExtraFiles = []*os.File{gate}
 	cmd.Dir = l.Dir
 	cmd.Env = l.Env
 	cmd.Stdin = input
@@ -76,7 +99,28 @@ func (l Local) run(ctx context.Context, argv []string, input io.Reader, output, 
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = 2 * time.Second
-	err := cmd.Run()
+	if err := cmd.Start(); err != nil {
+		return Result{}, fmt.Errorf("faden: local start: %w", err)
+	}
+	gate.Close()
+	if err := recordLocalGroup(path, cmd.Process.Pid); err != nil {
+		stopLocalGroup(cmd.Process.Pid)
+		cmd.Wait()
+		return Result{}, fmt.Errorf("faden: local record process group: %w", err)
+	}
+	if _, err := io.WriteString(release, "run\n"); err != nil {
+		stopLocalGroup(cmd.Process.Pid)
+		cmd.Wait()
+		return Result{}, fmt.Errorf("faden: local release command: %w", err)
+	}
+	release.Close()
+	err = cmd.Wait()
+	if stopErr := stopLocalGroup(cmd.Process.Pid); stopErr != nil {
+		return Result{}, fmt.Errorf("faden: local stop group: %w", stopErr)
+	}
+	if removeErr := os.Remove(path); removeErr != nil {
+		return Result{}, fmt.Errorf("faden: local remove pid: %w", removeErr)
+	}
 	var exit *exec.ExitError
 	switch {
 	case ctx.Err() != nil:

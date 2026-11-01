@@ -20,7 +20,8 @@
 
 - **On open, every `running` turn continues.** Its attempt count goes up in the store before anything is sent, so a crash during the continuation still recovers on the next open (t3code writes "starting" for the same reason). After 3 attempts the turn fails with a message that says to send a new one.
 - **A backend declares whether it continues without a prompt.** llama.cpp does (faden owns its transcript); Claude Code gets "Continue where you left off." (t3code's text).
-- **A CLI left running by a dead host is stopped before the turn continues.** Otherwise two agents write to one workspace. A local process dies with its parent (Linux `Pdeathsig`, process group); a process inside a container is found by a pid file the start command writes and killed by the next owner.
+- ~~**A CLI left running by a dead host is stopped before the turn continues.** Otherwise two agents write to one workspace. A local process dies with its parent (Linux `Pdeathsig`, process group); a process inside a container is found by a pid file the start command writes and killed by the next owner.~~ *Superseded 2026-11-01: the parent-death signal does not stop grandchildren.*
+- **Local leftovers are found in `Local.PIDDir/process.pid`.** The host supplies an existing, durably created directory for one sequential command owner and reuses it after restart. Before every command, Local kills the recorded process group, ignoring a group that no longer exists. A shell waits on a pipe while Local writes the new group id, syncs the file and syncs its directory; only then does Local release the command. Local kills remaining group members and removes the record on completion. `Pdeathsig` is supplementary: it targets the direct child and depends on the starting OS thread. Container leftovers still use the container pid file.
 
 ### Backends
 
