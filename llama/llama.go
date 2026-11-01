@@ -93,11 +93,19 @@ type toolCall struct {
 	} `json:"function"`
 }
 
-// transcript is the session as chat messages, plus which calls were stored.
+// transcript is the session as chat messages, plus which calls of the last
+// assistant message were stored. Models reuse ids such as call_0 across
+// messages, so the maps cover one assistant message only.
 type transcript struct {
 	messages []message
 	called   map[string]bool // call ids with a stored tool_call event
 	answered map[string]bool // call ids with a stored tool_result event
+}
+
+// startMessage forgets the call state of the previous assistant message.
+func (tr *transcript) startMessage() {
+	tr.called = map[string]bool{}
+	tr.answered = map[string]bool{}
 }
 
 func rebuild(events []faden.Event) (*transcript, error) {
@@ -113,6 +121,7 @@ func rebuild(events []faden.Event) (*transcript, error) {
 					return nil, fmt.Errorf("llama: event %d: %w", e.Seq, err)
 				}
 			}
+			tr.startMessage()
 			tr.messages = append(tr.messages, m)
 		case faden.ToolCall:
 			tr.called[callID(e)] = true
@@ -266,6 +275,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, _ json.RawMessage, emit
 		if err := emit(faden.Event{Kind: faden.AssistantMessage, Text: answer.Content, Native: native}); err != nil {
 			return nil, fmt.Errorf("llama: store answer: %w", err)
 		}
+		tr.startMessage()
 		tr.messages = append(tr.messages, answer)
 	}
 }

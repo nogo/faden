@@ -491,3 +491,34 @@ func TestLive(t *testing.T) {
 		t.Fatalf("turn = %+v, tool runs = %d", got, runs)
 	}
 }
+
+func TestCallIDReusedInLaterTurnRunsAgain(t *testing.T) {
+	_, srv := newReplay(t, "add_call.json", "final.json", "add_call.json", "final.json")
+	store := openStore(t, t.TempDir())
+	var runs int
+	b, err := llama.New(llama.Config{URL: srv.URL, Store: store, Tools: []llama.Tool{addTool(&runs)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"r1", "r2"} {
+		if got := run(t, store, b, id, "what is 2+3?"); got.Status != faden.Done {
+			t.Fatalf("turn %s = %+v", id, got)
+		}
+	}
+	if runs != 2 {
+		t.Fatalf("tool ran %d times, want 2", runs)
+	}
+	events, _ := store.Events(t.Context(), "s1", 0)
+	var calls, results int
+	for _, e := range events {
+		switch e.Kind {
+		case faden.ToolCall:
+			calls++
+		case faden.ToolResult:
+			results++
+		}
+	}
+	if calls != 2 || results != 2 {
+		t.Fatalf("stored %d calls and %d results, want 2 and 2", calls, results)
+	}
+}
