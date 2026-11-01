@@ -62,3 +62,11 @@
 - **Claude resume after a kill:** does `--resume` see the work before the kill? Measure with a live test before the continue prompt is final.
 - **Thread reading from a container:** loopback on the host is not reachable from a container without host networking, which forge's boundary forbids. Candidates: a unix socket mounted into the container, or no `read_thread` for container runs.
 - **Codex without a prompt:** read how t3code's Codex adapter continues a turn.
+
+## Open 2026-11-01 — Claude resume after a kill
+
+The live measurement is unverified. The live command fails because this environment has no `claude` executable. `FADEN_LIVE=1 go test -v ./claude -run TestLiveResumeAfterKill` runs the experiment when the host supplies both. It kills the host after `first.txt` appears, resumes with the continuation prompt, checks the remaining files, and logs Claude's answer. The answer must be reviewed for evidence that Claude knew about the first file before inspecting the workspace. The synthetic parser fixture is not a recording from a real run; that acceptance requirement remains open.
+
+## Decided 2026-11-01 — Claude runtime streaming
+
+Claude consumes stdin and emits completed items while it runs. Its backend requires `RunStream`; `Local` implements it beside the existing buffered `Run`. Stderr stays separate from the JSON stream. The host supplies the environment through `Local.Env`. The backend checkpoints its UUID through the host's store before launch, and checkpoints the last assistant id during the stream. A custom backend name must match its key in the runner.
