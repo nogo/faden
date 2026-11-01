@@ -452,7 +452,22 @@ func TestLive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := run(t, store, b, "r1", "Use the add tool to add 2 and 3, then tell me the sum.")
+	// Not run(): its turn names a fake model, which overrides the configured
+	// one, and its timeout is too short for a real model.
+	r, err := faden.Open(store, map[string]faden.Backend{"llama": b})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if _, err := r.Submit(t.Context(), faden.Submission{Session: "s1", RequestID: "r1", Input: "Use the add tool to add 2 and 3, then tell me the sum.", Backend: "llama"}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
+	defer cancel()
+	got, err := r.Wait(ctx, "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got.Status != faden.Done || runs == 0 {
 		t.Fatalf("turn = %+v, tool runs = %d", got, runs)
 	}
