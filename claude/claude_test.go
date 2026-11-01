@@ -98,7 +98,9 @@ type inspectRuntime struct {
 	code   int
 }
 
-func (r inspectRuntime) RunStream(_ context.Context, argv []string, _ io.Reader, w io.Writer) (faden.Result, error) {
+func (r inspectRuntime) Stop(context.Context, string) error { return nil }
+func (r inspectRuntime) Run(_ context.Context, command faden.Command) (faden.Result, error) {
+	w := command.Stdout
 	if len(r.store.data) == 0 {
 		return faden.Result{}, errors.New("cursor missing before launch")
 	}
@@ -281,6 +283,8 @@ func (g *threadGrant) Config() []byte {
 	return []byte(`{"mcpServers":{"faden":{"type":"http","url":"http://127.0.0.1:1/mcp","headers":{"Authorization":"Bearer ${FADEN_MCP_TOKEN}"}}}}`)
 }
 
+type hostRuntime struct{ faden.Local }
+
 func TestThreadsTokenOnlyInEnvironment(t *testing.T) {
 	dir := t.TempDir()
 	program := "#!/bin/sh\nprintf '%s\\n' \"$@\" > args\ncat > input\nwhile [ $# -gt 0 ]; do [ \"$1\" = --mcp-config ] && cp \"$2\" config; shift; done\nprintf '%s' \"$FADEN_MCP_TOKEN\" > token\ncat fixture\n"
@@ -288,7 +292,7 @@ func TestThreadsTokenOnlyInEnvironment(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "fixture"), []byte(stream), 0600)
 	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
 	grant := &threadGrant{}
-	b, err := New(Config{Runtime: faden.Local{PIDDir: dir, Dir: dir}, Store: &checkpoint{}, Threads: grant})
+	b, err := New(Config{Runtime: hostRuntime{faden.Local{PIDDir: dir, Dir: dir}}, Store: &checkpoint{}, Threads: grant})
 	if err != nil {
 		t.Fatal(err)
 	}

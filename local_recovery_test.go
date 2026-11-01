@@ -21,7 +21,7 @@ func localRecoveryBackend(dir string) *fake {
 		if turn.Attempts > 1 {
 			argv = []string{"true"}
 		}
-		_, err := (faden.Local{PIDDir: dir, Dir: dir}).Run(ctx, argv)
+		_, err := (faden.Local{PIDDir: dir, Dir: dir}).Run(ctx, faden.Command{Key: turn.RequestID, Argv: argv})
 		return nil, err
 	}}
 }

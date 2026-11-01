@@ -19,11 +19,8 @@ import (
 	"github.com/nogo/faden/mcp"
 )
 
-// Runtime streams a CLI's stdout while feeding its stdin.
-// faden.Local implements it. Credentials belong in the runtime's environment.
-type Runtime interface {
-	RunStream(context.Context, []string, io.Reader, io.Writer) (faden.Result, error)
-}
+// Runtime runs keyed commands and stops leftovers before continuation.
+type Runtime = faden.Runtime
 
 // Store checkpoints the cursor before the process starts and after assistant messages.
 type Store interface {
@@ -46,8 +43,8 @@ type Config struct {
 	// Args contains host-supplied permission flags, never credentials.
 	Args []string
 	// Threads, if set, lets Claude read the session through read_thread. It
-	// needs Runtime to be a faden.Local: the token reaches Claude through
-	// the process environment and the config file is written on the host.
+	// passes its token through Command.Env. The host must make the config
+	// file and thread server reachable from the command.
 	Threads Threads
 }
 
@@ -76,6 +73,11 @@ type cursor struct {
 
 // Run saves the session UUID before launching Claude, then stores completed items.
 func (b *Backend) Run(ctx context.Context, t faden.Turn, raw json.RawMessage, emit func(faden.Event) error) (json.RawMessage, error) {
+	if t.Attempts > 1 {
+		if err := b.cfg.Runtime.Stop(ctx, t.RequestID); err != nil {
+			return nil, fmt.Errorf("claude: stop turn %s: %w", t.RequestID, err)
+		}
+	}
 	var c cursor
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &c); err != nil {
@@ -110,11 +112,8 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, raw json.RawMessage, em
 	}
 	argv = append(argv, b.cfg.Args...)
 	runtime := b.cfg.Runtime
+	var env []string
 	if b.cfg.Threads != nil {
-		local, ok := runtime.(faden.Local)
-		if !ok {
-			return nil, errors.New("claude: Threads needs a faden.Local runtime")
-		}
 		token, err := b.cfg.Threads.Grant(t.Session)
 		if err != nil {
 			return nil, err
@@ -133,7 +132,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, raw json.RawMessage, em
 			return nil, fmt.Errorf("claude: MCP config: %w", err)
 		}
 		argv = append(argv, "--mcp-config", file.Name())
-		runtime = local.WithEnv(mcp.TokenEnv + "=" + token)
+		env = []string{mcp.TokenEnv + "=" + token}
 	}
 	prompt := t.Input
 	if len(t.CatchUp) > 0 {
@@ -150,7 +149,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, raw json.RawMessage, em
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		res, err := runtime.RunStream(runCtx, argv, bytes.NewReader(input), writer)
+		res, err := runtime.Run(runCtx, faden.Command{Key: t.RequestID, Argv: argv, Env: env, Stdin: bytes.NewReader(input), Stdout: writer})
 		writer.CloseWithError(err)
 		done <- outcome{res, err}
 	}()

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -521,4 +522,63 @@ func TestCallIDReusedInLaterTurnRunsAgain(t *testing.T) {
 	if calls != 2 || results != 2 {
 		t.Fatalf("stored %d calls and %d results, want 2 and 2", calls, results)
 	}
+}
+
+// stopOnlyRuntime forwards recovery cleanup and rejects any unexpected command.
+type stopOnlyRuntime struct{ local faden.Local }
+
+func (r stopOnlyRuntime) Stop(ctx context.Context, key string) error { return r.local.Stop(ctx, key) }
+func (r stopOnlyRuntime) Run(context.Context, faden.Command) (faden.Result, error) {
+	return faden.Result{}, fmt.Errorf("unexpected command")
+}
+
+func TestContinuedTurnWithoutCommandStopsLeftover(t *testing.T) {
+	dir := t.TempDir()
+	local := faden.Local{PIDDir: dir, Dir: dir}
+	ready := make(chan struct{}, 1)
+	done := make(chan error, 1)
+	go func() {
+		_, err := local.Run(t.Context(), faden.Command{Key: "r1", Argv: []string{"sh", "-c", "echo ready; sleep 600 & wait"}, Stdout: readyWriter{ready}})
+		done <- err
+	}()
+	select {
+	case <-ready:
+	case <-t.Context().Done():
+		t.Fatal(t.Context().Err())
+	}
+	store, err := jsonl.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.SubmitTurn(t.Context(), faden.Turn{RequestID: "r1", Session: "s1", Backend: "llama", Input: "go"}); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"done"}}]}`)
+	}))
+	defer srv.Close()
+	backend, err := llama.New(llama.Config{URL: srv.URL, Store: store, Runtime: stopOnlyRuntime{local}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = backend.Run(t.Context(), faden.Turn{RequestID: "r1", Session: "s1", Attempts: 2}, nil, func(faden.Event) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("leftover still running")
+	}
+}
+
+type readyWriter struct{ ready chan struct{} }
+
+func (w readyWriter) Write(p []byte) (int, error) {
+	select {
+	case w.ready <- struct{}{}:
+	default:
+	}
+	return len(p), nil
 }

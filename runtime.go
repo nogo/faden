@@ -12,11 +12,21 @@ import (
 	"time"
 )
 
-// Result is what a finished command left behind. Output holds standard
-// output and standard error in the order they were written.
+// Result is what a finished command left behind. Output buffers stderr and,
+// when Command.Stdout is nil, stdout.
 type Result struct {
 	Output   []byte
 	ExitCode int
+}
+
+// Command describes one command belonging to a turn. Env adds to the runtime environment.
+// Nil Stdout buffers output in Result.Output; otherwise only stderr is buffered.
+type Command struct {
+	Key    string
+	Argv   []string
+	Env    []string
+	Stdin  io.Reader
+	Stdout io.Writer
 }
 
 // Runtime starts a command where the host wants it to run and waits for it.
@@ -25,16 +35,19 @@ type Result struct {
 //
 // The host creates and owns whatever the runtime runs in. A container
 // runtime must keep the CLI's own session files across turns.
+//
+// Each key has one command owner at a time, including Stop during recovery.
 type Runtime interface {
-	Run(ctx context.Context, argv []string) (Result, error)
+	Run(context.Context, Command) (Result, error)
+	Stop(context.Context, string) error
 }
 
 // Local runs commands as processes of the host, in Dir (the host's working
 // directory if empty), with the host's environment. A stopped command is
 // killed together with the processes it started.
 type Local struct {
-	// PIDDir is an existing, durable directory owned by one sequential command runner.
-	// Reuse it after a restart; never share it with another active Local.
+	// PIDDir is an existing, durable directory for keyed command records.
+	// Reuse it after a restart. Each key has one command owner at a time.
 	// The host must sync its creation and keep it across restarts.
 	PIDDir string
 	Dir    string
@@ -42,37 +55,39 @@ type Local struct {
 	Env []string
 }
 
-// WithEnv returns a copy of l that also sets the given NAME=value entries.
-func (l Local) WithEnv(extra ...string) Local {
-	env := l.Env
-	if env == nil {
-		env = os.Environ()
-	}
-	l.Env = append(append([]string(nil), env...), extra...)
-	return l
-}
-
 // Run implements Runtime.
-func (l Local) Run(ctx context.Context, argv []string) (Result, error) {
+func (l Local) Run(ctx context.Context, command Command) (Result, error) {
 	var out bytes.Buffer
-	res, err := l.run(ctx, argv, nil, &out, &out)
+	output := command.Stdout
+	if output == nil {
+		output = &out
+	}
+	res, err := l.run(ctx, command, output, &out)
 	res.Output = out.Bytes()
 	return res, err
 }
 
-// RunStream runs a command with stdin and streamed stdout. Stderr is kept in Result.
-func (l Local) RunStream(ctx context.Context, argv []string, input io.Reader, output io.Writer) (Result, error) {
-	var stderr bytes.Buffer
-	res, err := l.run(ctx, argv, input, output, &stderr)
-	res.Output = stderr.Bytes()
-	return res, err
+// Stop stops the leftover belonging to key.
+func (l Local) Stop(ctx context.Context, key string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	path, err := l.pidFile(key)
+	if err != nil {
+		return err
+	}
+	if err := stopLocalLeftover(path); err != nil {
+		return fmt.Errorf("faden: local stop key %q: %w", key, err)
+	}
+	return nil
 }
 
-func (l Local) run(ctx context.Context, argv []string, input io.Reader, output, stderr io.Writer) (Result, error) {
+func (l Local) run(ctx context.Context, command Command, output, stderr io.Writer) (Result, error) {
+	argv := command.Argv
 	if len(argv) == 0 {
 		return Result{}, errors.New("faden: local run: empty command")
 	}
-	path, err := l.pidFile()
+	path, err := l.pidFile(command.Key)
 	if err != nil {
 		return Result{}, err
 	}
@@ -94,9 +109,13 @@ func (l Local) run(ctx context.Context, argv []string, input io.Reader, output, 
 	cmd.ExtraFiles = []*os.File{gate}
 	cmd.Dir = l.Dir
 	cmd.Env = l.Env
-	cmd.Stdin = input
+	if cmd.Env == nil {
+		cmd.Env = os.Environ()
+	}
+	cmd.Env = append(append([]string(nil), cmd.Env...), command.Env...)
+	cmd.Stdin = command.Stdin
 	cmd.Stdout, cmd.Stderr = output, stderr
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = 2 * time.Second
 	if err := cmd.Start(); err != nil {
@@ -111,6 +130,7 @@ func (l Local) run(ctx context.Context, argv []string, input io.Reader, output, 
 	if _, err := io.WriteString(release, "run\n"); err != nil {
 		stopLocalGroup(cmd.Process.Pid)
 		cmd.Wait()
+		os.Remove(path)
 		return Result{}, fmt.Errorf("faden: local release command: %w", err)
 	}
 	release.Close()
@@ -118,7 +138,7 @@ func (l Local) run(ctx context.Context, argv []string, input io.Reader, output, 
 	if stopErr := stopLocalGroup(cmd.Process.Pid); stopErr != nil {
 		return Result{}, fmt.Errorf("faden: local stop group: %w", stopErr)
 	}
-	if removeErr := os.Remove(path); removeErr != nil {
+	if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 		return Result{}, fmt.Errorf("faden: local remove pid: %w", removeErr)
 	}
 	var exit *exec.ExitError

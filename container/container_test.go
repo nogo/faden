@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nogo/faden"
 	"github.com/nogo/faden/container"
 )
 
@@ -16,7 +17,7 @@ func fakeEngine(t *testing.T) (logPath string) {
 	t.Helper()
 	dir := t.TempDir()
 	logPath = filepath.Join(dir, "calls.log")
-	script := "#!/bin/sh\necho \"$*\" >> \"$FAKE_LOG\"\ncase \"$*\" in *'exec $$'*|*'echo $$'*) exit \"${FAKE_EXIT:-0}\";; esac\nexit 0\n"
+	script := fakeScript
 	if err := os.WriteFile(filepath.Join(dir, "podman"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -36,19 +37,19 @@ func calls(t *testing.T, path string) []string {
 
 func TestRunKillsEarlierProcessBeforeStarting(t *testing.T) {
 	log := fakeEngine(t)
-	r := container.Runtime{Container: "box", Turn: "t1", Dir: "/work"}
-	if _, err := r.Run(t.Context(), []string{"claude", "--resume", "abc"}); err != nil {
+	r := container.Runtime{Container: "box", Dir: "/work"}
+	if _, err := r.Run(t.Context(), faden.Command{Key: "test", Argv: []string{"claude", "--resume", "abc"}}); err != nil {
 		t.Fatal(err)
 	}
 	got := calls(t, log)
-	if len(got) != 2 {
+	if len(got) != 3 {
 		t.Fatalf("calls = %q, want kill then start", got)
 	}
-	if !strings.Contains(got[0], "kill -9") || !strings.HasSuffix(got[0], "/tmp/faden/t1.pid") {
-		t.Errorf("first call = %q, want the kill of /tmp/faden/t1.pid", got[0])
+	if !strings.Contains(got[0], "kill -9") || !strings.HasSuffix(got[0], "/tmp/faden/9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08.pid") {
+		t.Errorf("first call = %q, want the kill of /tmp/faden/9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08.pid", got[0])
 	}
 	start := got[1]
-	for _, want := range []string{"exec --interactive --workdir /work box sh -c", "echo $$ > \"$1\"", "sh /tmp/faden/t1.pid claude --resume abc"} {
+	for _, want := range []string{"exec --interactive --workdir /work box setsid sh -c", "sync \"$tmp\" && mv \"$tmp\" \"$file\"", "sh /tmp/faden/9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08.pid claude --resume abc"} {
 		if !strings.Contains(start, want) {
 			t.Errorf("start call %q lacks %q", start, want)
 		}
@@ -58,8 +59,8 @@ func TestRunKillsEarlierProcessBeforeStarting(t *testing.T) {
 func TestEnvValueNeverReachesArguments(t *testing.T) {
 	log := fakeEngine(t)
 	const secret = "sk-test-secret-value"
-	r := container.Runtime{Container: "box", Turn: "t2", Env: []string{"API_TOKEN=" + secret}}
-	if _, err := r.Run(t.Context(), []string{"claude"}); err != nil {
+	r := container.Runtime{Container: "box"}
+	if _, err := r.Run(t.Context(), faden.Command{Key: "test", Env: []string{"API_TOKEN=" + secret}, Argv: []string{"claude"}}); err != nil {
 		t.Fatal(err)
 	}
 	all := strings.Join(calls(t, log), "\n")
@@ -74,17 +75,24 @@ func TestEnvValueNeverReachesArguments(t *testing.T) {
 func TestRunReportsExitCodeAsResult(t *testing.T) {
 	fakeEngine(t)
 	t.Setenv("FAKE_EXIT", "7")
-	res, err := container.Runtime{Container: "box", Turn: "t3"}.Run(t.Context(), []string{"claude"})
+	res, err := container.Runtime{Container: "box"}.Run(t.Context(), faden.Command{Key: "test", Argv: []string{"claude"}})
 	if err != nil || res.ExitCode != 7 {
 		t.Fatalf("result = %+v, err = %v, want exit 7", res, err)
 	}
 }
 
-func TestRunRejectsUnsafeTurn(t *testing.T) {
+func TestRunHashesArbitraryKeys(t *testing.T) {
 	fakeEngine(t)
 	for _, turn := range []string{"", "../x", "a b", "a/b"} {
-		if _, err := (container.Runtime{Container: "box", Turn: turn}).Run(t.Context(), []string{"x"}); err == nil {
-			t.Errorf("turn %q accepted", turn)
+		if _, err := (container.Runtime{Container: "box"}).Run(t.Context(), faden.Command{Key: turn, Argv: []string{"x"}}); err != nil {
+			t.Errorf("turn %q: %v", turn, err)
 		}
 	}
 }
+
+const fakeScript = `#!/bin/sh
+printf '%s' "$*" | tr '\n' ' ' >> "$FAKE_LOG"
+printf '\n' >> "$FAKE_LOG"
+case "$*" in *setsid*) exit "${FAKE_EXIT:-0}";; esac
+exit 0
+`

@@ -99,3 +99,16 @@ The protocol shapes come from sidenote's adapter and t3code as described in the 
 ### Measured — Codex resume after a kill
 
 **Measured 2026-11-02 (codex-cli 0.166.0): Codex does not know the killed turn's result either.** `FADEN_LIVE=1 go test -v ./codex -run TestLiveResumeAfterKill` killed the host after `first.txt` was written. Codex's own rollout kept the killed turn's assistant message and its first tool call, but not the tool's output. Continued with no prompt, Codex answered `FIRST_FILE_UNKNOWN`, then checked the workspace and found `first.txt` instead of writing it again. One run. Like Claude, the killed turn's results live only in faden's store; #14 proposes carrying them into the continuation.
+## Decided 2026-11-01 — commands keyed by turn
+
+### Restart
+
+This supersedes the earlier Restart rule that assigns `Local.PIDDir/process.pid` to one sequential owner. It also supersedes the parent-death signal as a recovery aid. Backends call `Stop(ctx, t.RequestID)` before continuing an attempt above one, including turns that run no command. Each key has one command owner at a time. Hosts that share a record directory across stores must give those stores distinct request IDs.
+
+A record contains the process group leader's PID and its Linux start time from `/proc/<pid>/stat`. Recovery kills the group only when that identity still matches. Missing, malformed, and stale records are discarded. Local leaves the leader alive after host death so recovery can still verify it. Cancellation and normal completion kill the local group.
+
+### Runtimes
+
+This supersedes `RunStream`, `Local.WithEnv`, and the fixed container turn field in the earlier runtime, streaming, MCP, and Codex decisions. `Runtime.Run` takes one `Command` with a turn key, argv, extra environment, stdin, and stdout. Nil stdout buffers both output streams in `Result.Output`; streamed stdout leaves stderr there. Claude, Codex, and llama use the request ID as the key. Claude passes the MCP token through the command environment with every runtime. The host must make its MCP config file and server reachable from the command.
+
+Local records live in the host's durable `PIDDir`; container records live in `/tmp/faden` inside the host's container. Both name records `<sha256(key)>.pid`, so arbitrary keys cannot escape the directory. Each runtime writes a temporary file, syncs it, renames it, and syncs the directory before releasing the command. Commands remove their records when they end. Starting a command recovers only its own key. The container supplies Linux `/proc`, `setsid`, `awk`, and `sync` with file operands. Faden does not own the container lifecycle.

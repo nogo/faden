@@ -19,11 +19,8 @@ import (
 	"github.com/nogo/faden/handover"
 )
 
-// Runtime streams a CLI's stdout while feeding its stdin.
-// faden.Local implements it. Credentials belong in the runtime's environment.
-type Runtime interface {
-	RunStream(context.Context, []string, io.Reader, io.Writer) (faden.Result, error)
-}
+// Runtime runs keyed commands and stops leftovers before continuation.
+type Runtime = faden.Runtime
 
 // Store checkpoints the cursor as soon as Codex has answered thread/start.
 type Store interface {
@@ -88,6 +85,11 @@ type message struct {
 // Run starts the app-server, opens or resumes the thread, saves the thread id,
 // then starts the turn and stores completed items until the turn ends.
 func (b *Backend) Run(ctx context.Context, t faden.Turn, raw json.RawMessage, emit func(faden.Event) error) (json.RawMessage, error) {
+	if t.Attempts > 1 {
+		if err := b.cfg.Runtime.Stop(ctx, t.RequestID); err != nil {
+			return nil, fmt.Errorf("codex: stop turn %s: %w", t.RequestID, err)
+		}
+	}
 	var c cursor
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &c); err != nil {
@@ -121,7 +123,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, raw json.RawMessage, em
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		res, err := b.cfg.Runtime.RunStream(runCtx, argv, stdinR, stdoutW)
+		res, err := b.cfg.Runtime.Run(runCtx, faden.Command{Key: t.RequestID, Argv: argv, Stdin: stdinR, Stdout: stdoutW})
 		stdinR.Close()
 		stdoutW.CloseWithError(err)
 		done <- outcome{res, err}

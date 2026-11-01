@@ -47,20 +47,20 @@ func sortedTools(m map[string]Tool) []Tool {
 }
 
 // toolset is the host's tools plus the built-in ones, bound to one session.
-func (b *Backend) toolset(session string) map[string]Tool {
+func (b *Backend) toolset(session, key string) map[string]Tool {
 	tools := map[string]Tool{}
 	for _, t := range b.cfg.Tools {
 		tools[t.Name] = t
 	}
 	if b.cfg.Runtime != nil {
-		tools[bashName] = bashTool(b.cfg.Runtime)
+		tools[bashName] = bashTool(b.cfg.Runtime, key)
 	}
 	tools[readThreadName] = readThreadTool(b.cfg.Store, session)
 	return tools
 }
 
 // bashTool runs a command line through the runtime. It is never Safe.
-func bashTool(rt faden.Runtime) Tool {
+func bashTool(rt faden.Runtime, key string) Tool {
 	return Tool{
 		Name:        bashName,
 		Description: "Run a shell command and return its output and exit code.",
@@ -72,7 +72,7 @@ func bashTool(rt faden.Runtime) Tool {
 			if err := json.Unmarshal(args, &a); err != nil || a.Command == "" {
 				return "", errors.New("arguments need a non-empty command")
 			}
-			res, err := rt.Run(ctx, []string{"bash", "-c", a.Command})
+			res, err := rt.Run(ctx, faden.Command{Key: key, Argv: []string{"bash", "-c", a.Command}})
 			if err != nil {
 				return "", err
 			}

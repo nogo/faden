@@ -22,7 +22,9 @@ type handoverRuntime struct {
 	prompts []string
 }
 
-func (r *handoverRuntime) RunStream(_ context.Context, args []string, in io.Reader, out io.Writer) (faden.Result, error) {
+func (r *handoverRuntime) Stop(context.Context, string) error { return nil }
+func (r *handoverRuntime) Run(_ context.Context, command faden.Command) (faden.Result, error) {
+	args, in, out := command.Argv, command.Stdin, command.Stdout
 	var request struct{ Message struct{ Content string } }
 	if err := json.NewDecoder(in).Decode(&request); err != nil {
 		return faden.Result{}, err
