@@ -1,0 +1,1 @@
+{"id":"chatcmpl-3","object":"chat.completion","model":"test-model","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"All done."}}]}

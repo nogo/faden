@@ -28,6 +28,8 @@
 - **Claude Code:** faden creates the session UUID and passes `--session-id` on the first turn and `--resume` on later ones, so the id is stored before the process starts. `--print` with stream-json input and output; one process per turn (as sidenote does). The cursor also keeps the last assistant message id. The host supplies the permission flags.
 - **llama.cpp:** faden's own loop against an OpenAI-compatible `/v1/chat/completions`, ported from invest's analyst. Each model answer is stored; a tool call is stored before it runs and its result after. On continue, the messages are rebuilt from the events. A stored call without a result runs again only if its tool is marked safe; otherwise its result says it was interrupted.
 - **llama.cpp tools** are the host's Go functions plus `bash` (run through the runtime, never safe to replay) and `read_thread`.
+- **`faden.Runtime` runs one command to its end** and returns output and exit code; a non-zero exit is a result, not an error. `faden.Local` runs it through `os/exec` in a directory and kills the process group when stopped.
+- **llama.cpp stores the user message itself** on the first attempt. A continuation that finds no stored user message for its turn fails with "send a new turn", because the runner no longer holds the input then.
 - **Codex is parked** until Claude and llama.cpp work. sidenote's `codex app-server` adapter is the starting point.
 
 ### Runtimes
