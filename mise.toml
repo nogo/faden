@@ -1,0 +1,37 @@
+[tools]
+go = "1.27.3"
+
+[tasks.test]
+description = "Run tests with race detector (no cache)"
+run = "go test -race -count=1 ./..."
+
+[tasks.vet]
+description = "Run go vet"
+run = "go vet ./..."
+
+[tasks."fmt:check"]
+description = "Fail if any .go files are unformatted"
+run = """
+UNFORMATTED=$(gofmt -l .)
+if [ -n "$UNFORMATTED" ]; then
+    echo "FAIL: unformatted files:"
+    echo "$UNFORMATTED"
+    exit 1
+fi
+"""
+
+[tasks.tidy]
+description = "Check go.mod and go.sum are tidy"
+run = """
+BEFORE=$(cat go.mod go.sum 2>/dev/null | sha256sum)
+go mod tidy
+if [ "$BEFORE" != "$(cat go.mod go.sum 2>/dev/null | sha256sum)" ]; then
+    echo "FAIL: go.mod/go.sum changed by tidy — review and commit the changes"
+    exit 1
+fi
+"""
+
+[tasks.check]
+description = "Full local verification: vet, fmt, tidy, test"
+depends = ["vet", "fmt:check", "tidy", "test"]
+run = 'echo "All checks passed."'
