@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/nogo/faden"
+	"github.com/nogo/faden/handover"
 )
 
 // Runtime streams a CLI's stdout while feeding its stdin.
@@ -95,7 +96,11 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, raw json.RawMessage, em
 		argv = append(argv, "--model", t.Model)
 	}
 	argv = append(argv, b.cfg.Args...)
-	input, _ := json.Marshal(map[string]any{"type": "user", "message": map[string]string{"role": "user", "content": t.Input}})
+	prompt := t.Input
+	if len(t.CatchUp) > 0 {
+		prompt = handover.Block(handover.Select(t.CatchUp, t.Input, t.HandoverBudget)) + "\n" + t.Input
+	}
+	input, _ := json.Marshal(map[string]any{"type": "user", "message": map[string]string{"role": "user", "content": prompt}})
 	input = append(input, '\n')
 	if err := emit(faden.Event{Kind: faden.UserMessage, Text: t.Input}); err != nil {
 		return nil, err

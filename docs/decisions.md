@@ -70,3 +70,9 @@ The live measurement is unverified. The live command fails because this environm
 ## Decided 2026-11-01 — Claude runtime streaming
 
 Claude consumes stdin and emits completed items while it runs. Its backend requires `RunStream`; `Local` implements it beside the existing buffered `Run`. Stderr stays separate from the JSON stream. The host supplies the environment through `Local.Env`. The backend checkpoints its UUID through the host's store before launch, and checkpoints the last assistant id during the stream. A custom backend name must match its key in the runner.
+
+## Decided 2026-11-01 — handover replay
+
+A submission selects its backend. The runner records a handover when execution reaches a different backend, so queued submissions follow execution order. The event keeps the destination, the last event seen by that backend, and the host's byte budget. A retry uses that same boundary and budget. `faden.Options.Budget` sets the budget when opening the runner; zero uses 16,000 bytes. The request consumes the budget but remains intact. The first user message in the unseen range remains intact even when it exceeds the remaining budget. Selection counts text bytes, excluding attribution and omission notices.
+
+llama.cpp rebuilds its native messages and inserts portable messages at incoming handovers. Foreign native payloads never become llama.cpp tool calls. Claude receives portable text before its request while retaining its own resume cursor.

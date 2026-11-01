@@ -54,15 +54,19 @@ type Session struct {
 // Turn is one user input and everything until the backend's final answer.
 // RequestID is unique per store.
 type Turn struct {
-	RequestID string    `json:"requestId"`
-	Session   string    `json:"session"`
-	Input     string    `json:"input"`
-	Backend   string    `json:"backend"`
-	Model     string    `json:"model,omitempty"`
-	Status    Status    `json:"status"`
-	Attempts  int       `json:"attempts"`
-	Error     string    `json:"error,omitempty"`
-	Created   time.Time `json:"created"`
+	// CatchUp contains unseen events on a backend switch. It is derived at run time.
+	CatchUp []Event `json:"-"`
+	// HandoverBudget limits catch-up text in bytes. Zero uses 16,000.
+	HandoverBudget int       `json:"-"`
+	RequestID      string    `json:"requestId"`
+	Session        string    `json:"session"`
+	Input          string    `json:"input"`
+	Backend        string    `json:"backend"`
+	Model          string    `json:"model,omitempty"`
+	Status         Status    `json:"status"`
+	Attempts       int       `json:"attempts"`
+	Error          string    `json:"error,omitempty"`
+	Created        time.Time `json:"created"`
 }
 
 // Event is one completed item of a turn. Native keeps the backend's own

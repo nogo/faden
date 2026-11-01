@@ -20,6 +20,7 @@ import (
 	"strings"
 
 	"github.com/nogo/faden"
+	"github.com/nogo/faden/handover"
 )
 
 // maxSteps bounds the model calls of one Run.
@@ -32,6 +33,8 @@ type Store interface {
 
 // Config wires a Backend.
 type Config struct {
+	// Name is the runner backend key. Empty means "llama".
+	Name string
 	// URL is the server's base address, such as http://localhost:8080.
 	URL string
 	// Model is used when a turn names none.
@@ -53,6 +56,9 @@ type Backend struct {
 
 // New returns a backend. It fails if a host tool reuses a built-in name.
 func New(cfg Config) (*Backend, error) {
+	if cfg.Name == "" {
+		cfg.Name = "llama"
+	}
 	if cfg.Client == nil {
 		cfg.Client = http.DefaultClient
 	}
@@ -119,6 +125,55 @@ func rebuild(events []faden.Event) (*transcript, error) {
 	return tr, nil
 }
 
+// rebuild replays native llama messages and portable context at each handover.
+func (b *Backend) rebuild(events []faden.Event) (*transcript, error) {
+	var native []faden.Event
+	active := true
+	for _, e := range events {
+		if e.Kind == faden.Handover {
+			active = strings.HasPrefix(e.Text, b.cfg.Name+" -> ")
+			break
+		}
+	}
+	for i, e := range events {
+		if e.Kind == faden.Handover {
+			active = e.Action == b.cfg.Name
+			if !active {
+				continue
+			}
+			var boundary faden.HandoverBoundary
+			if err := json.Unmarshal(e.Input, &boundary); err != nil {
+				return nil, fmt.Errorf("llama: handover %d: %w", e.Seq, err)
+			}
+			var unseen []faden.Event
+			for _, prior := range events[:i] {
+				if prior.Seq > boundary.After {
+					unseen = append(unseen, prior)
+				}
+			}
+			request := ""
+			for _, next := range events[i+1:] {
+				if next.RequestID == e.RequestID && next.Kind == faden.UserMessage {
+					request = next.Text
+					break
+				}
+			}
+			for _, item := range handover.Select(unseen, request, boundary.Budget) {
+				kind := faden.UserMessage
+				if item.Role == "assistant" {
+					kind = faden.AssistantMessage
+				}
+				native = append(native, faden.Event{Kind: kind, Text: item.Text})
+			}
+			continue
+		}
+		if active {
+			native = append(native, e)
+		}
+	}
+	return rebuild(native)
+}
+
 func callID(e faden.Event) string {
 	var n struct {
 		ID string `json:"id"`
@@ -165,7 +220,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, _ json.RawMessage, emit
 		return nil, fmt.Errorf("llama: read session %s: %w", t.Session, err)
 	}
 	if t.Input != "" {
-		e := faden.Event{Kind: faden.UserMessage, Text: t.Input}
+		e := faden.Event{Kind: faden.UserMessage, Text: t.Input, RequestID: t.RequestID}
 		if err := emit(e); err != nil {
 			return nil, fmt.Errorf("llama: store input: %w", err)
 		}
@@ -173,7 +228,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, _ json.RawMessage, emit
 	} else if !hasInput(events, t.RequestID) {
 		return nil, errors.New("llama: the turn's input was never stored; send a new turn")
 	}
-	tr, err := rebuild(events)
+	tr, err := b.rebuild(events)
 	if err != nil {
 		return nil, err
 	}

@@ -17,6 +17,7 @@ const (
 // Runner runs turns, one at a time per session, and continues the turns a
 // crash cut off.
 type Runner struct {
+	budget   int
 	store    Store
 	backends map[string]Backend
 	ctx      context.Context
@@ -29,6 +30,66 @@ type Runner struct {
 	fatal   error           // first store error a worker met
 }
 
+// catchUp derives the boundary from executed turns, not the queued session backend.
+func (r *Runner) catchUp(t *Turn, emit func(Event) error) error {
+	events, err := r.store.Events(r.ctx, t.Session, 0)
+	if err != nil {
+		return err
+	}
+	var previous string
+	var after int64
+	var marker *Event
+	backends := make(map[string]string)
+	for i, e := range events {
+		if e.RequestID == t.RequestID {
+			if e.Kind == Handover {
+				marker = &events[i]
+			}
+			continue
+		}
+		name, ok := backends[e.RequestID]
+		if !ok {
+			turn, err := r.store.Turn(r.ctx, e.RequestID)
+			if err != nil {
+				return err
+			}
+			name = turn.Backend
+			backends[e.RequestID] = name
+		}
+		previous = name
+		if name == t.Backend {
+			after = e.Seq
+		}
+	}
+	if marker == nil && (previous == "" || previous == t.Backend) {
+		return nil
+	}
+	boundary := HandoverBoundary{After: after, Budget: r.budget}
+	if marker != nil {
+		if err := json.Unmarshal(marker.Input, &boundary); err != nil {
+			return err
+		}
+	} else {
+		data, _ := json.Marshal(boundary)
+		if err := emit(Event{Kind: Handover, Action: t.Backend, Text: previous + " -> " + t.Backend, Input: data}); err != nil {
+			return err
+		}
+	}
+	t.HandoverBudget = boundary.Budget
+	for _, e := range events {
+		if e.Seq > boundary.After && e.RequestID != t.RequestID {
+			t.CatchUp = append(t.CatchUp, e)
+		}
+	}
+	return nil
+}
+
+// HandoverBoundary records the unseen range and host budget for replay.
+type HandoverBoundary struct {
+	After  int64 `json:"after"`
+	Budget int   `json:"budget"`
+}
+
 // Submission is what a host asks the runner to run.
 type Submission struct {
 	Session   string
@@ -38,10 +99,13 @@ type Submission struct {
 	Model     string
 }
 
+// Options controls handover context. Zero Budget uses 16,000 bytes.
+type Options struct{ Budget int }
+
 // Open starts a runner on store with the backends by name. Before it returns,
 // every running turn has its attempt count raised in the store; each then
 // continues in the background. The host owns the store and closes it after Close.
-func Open(store Store, backends map[string]Backend) (*Runner, error) {
+func Open(store Store, backends map[string]Backend, options ...Options) (*Runner, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &Runner{
 		store:    store,
@@ -50,6 +114,9 @@ func Open(store Store, backends map[string]Backend) (*Runner, error) {
 		cancel:   cancel,
 		active:   map[string]bool{},
 		changed:  make(chan struct{}),
+	}
+	if len(options) > 0 {
+		r.budget = options[0].Budget
 	}
 	turns, err := store.Unfinished(ctx)
 	if err != nil {
@@ -234,17 +301,42 @@ func (r *Runner) run(t Turn) error {
 			send.Input = ""
 		}
 	}
+	emitted := false
 	emit := func(e Event) error {
 		e.Session, e.RequestID = t.Session, t.RequestID
 		if e.Time.IsZero() {
 			e.Time = time.Now().UTC()
 		}
 		_, err := r.store.AppendEvent(r.ctx, e)
+		if err == nil {
+			emitted = true
+		}
 		return err
+	}
+	if err := r.catchUp(&send, emit); err != nil {
+		return fmt.Errorf("faden: handover turn %s: %w", t.RequestID, err)
 	}
 	cursor, runErr := backend.Run(r.ctx, send, session.Cursors[t.Backend], emit)
 	if r.ctx.Err() != nil {
 		return nil // closed: the turn stays running for the next Open
+	}
+	if !emitted {
+		// Even a silent backend must leave evidence of its participation.
+		events, err := r.store.Events(r.ctx, t.Session, 0)
+		if err != nil {
+			return fmt.Errorf("faden: read turn %s: %w", t.RequestID, err)
+		}
+		for _, e := range events {
+			if e.RequestID == t.RequestID {
+				emitted = true
+				break
+			}
+		}
+		if !emitted {
+			if err := emit(Event{Kind: TurnEnded}); err != nil {
+				return fmt.Errorf("faden: record turn %s: %w", t.RequestID, err)
+			}
+		}
 	}
 	if len(cursor) > 0 {
 		if err := r.store.SetCursor(r.ctx, t.Session, t.Backend, json.RawMessage(cursor)); err != nil {
