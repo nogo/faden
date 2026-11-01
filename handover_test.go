@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -210,5 +211,107 @@ func TestHandoverAfterSilentBackend(t *testing.T) {
 	// A silent backend's turn is still marked by its stored user message.
 	if len(events) != 3 || events[1].Kind != faden.Handover || events[1].Action != "two" {
 		t.Fatalf("%+v", events)
+	}
+}
+
+// llamaRecorder is a llama-server stand-in that keeps the last request's
+// messages and answers with a fixed text.
+type llamaRecorder struct {
+	mu       sync.Mutex
+	messages []string
+}
+
+func (l *llamaRecorder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Messages []struct{ Role, Content string }
+	}
+	json.NewDecoder(r.Body).Decode(&body)
+	l.mu.Lock()
+	l.messages = nil
+	for _, m := range body.Messages {
+		l.messages = append(l.messages, m.Role+": "+m.Content)
+	}
+	l.mu.Unlock()
+	io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"llama answer"}}]}`)
+}
+
+// count returns how many messages of the last request contain text.
+func (l *llamaRecorder) count(text string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	n := 0
+	for _, m := range l.messages {
+		n += strings.Count(m, text)
+	}
+	return n
+}
+
+func runTurns(t *testing.T, store faden.Store, backends map[string]faden.Backend, subs ...faden.Submission) {
+	t.Helper()
+	runner, err := faden.Open(store, backends)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runner.Close()
+	for _, s := range subs {
+		if _, err := runner.Submit(context.Background(), s); err != nil {
+			t.Fatal(err)
+		}
+		if turn := wait(t, runner, s.RequestID); turn.Status != faden.Done {
+			t.Fatalf("%+v", turn)
+		}
+	}
+}
+
+// otherAgent answers with a payload in a foreign native format.
+var otherAgent = &fake{run: func(_ context.Context, _ faden.Turn, _ json.RawMessage, emit func(faden.Event) error) (json.RawMessage, error) {
+	return nil, emit(faden.Event{Kind: faden.AssistantMessage, Text: "other answer", Native: json.RawMessage(`{"content":[{"type":"text","text":"other answer"}]}`)})
+}}
+
+// A session that starts elsewhere reaches llama only as handover context:
+// every earlier message once, never as llama's own native message.
+func TestLlamaJoiningLaterSeesEarlierMessagesOnce(t *testing.T) {
+	store := openStore(t, t.TempDir())
+	rec := &llamaRecorder{}
+	srv := httptest.NewServer(rec)
+	defer srv.Close()
+	lb, err := llama.New(llama.Config{URL: srv.URL, Store: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runTurns(t, store, map[string]faden.Backend{"other": otherAgent, "llama": lb},
+		faden.Submission{Session: "s", RequestID: "1", Backend: "other", Input: "first question"},
+		faden.Submission{Session: "s", RequestID: "2", Backend: "llama", Input: "second question"},
+	)
+	for _, text := range []string{"first question", "other answer", "second question"} {
+		if n := rec.count(text); n != 1 {
+			t.Fatalf("%q appears %d times: %v", text, n, rec.messages)
+		}
+	}
+}
+
+// A session that starts on llama keeps llama's own first turn when it
+// comes back after a handover.
+func TestLlamaReturningKeepsItsOwnFirstTurn(t *testing.T) {
+	store := openStore(t, t.TempDir())
+	rec := &llamaRecorder{}
+	srv := httptest.NewServer(rec)
+	defer srv.Close()
+	lb, err := llama.New(llama.Config{URL: srv.URL, Store: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runTurns(t, store, map[string]faden.Backend{"other": otherAgent, "llama": lb},
+		faden.Submission{Session: "s", RequestID: "1", Backend: "llama", Input: "first question"},
+		faden.Submission{Session: "s", RequestID: "2", Backend: "other", Input: "second question"},
+		faden.Submission{Session: "s", RequestID: "3", Backend: "llama", Input: "third question"},
+	)
+	for _, text := range []string{"first question", "second question", "other answer", "third question"} {
+		if n := rec.count(text); n != 1 {
+			t.Fatalf("%q appears %d times: %v", text, n, rec.messages)
+		}
+	}
+	if !slices.Contains(rec.messages, "user: first question") {
+		t.Fatalf("llama's own first turn is not native: %v", rec.messages)
 	}
 }
