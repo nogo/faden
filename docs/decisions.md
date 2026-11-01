@@ -32,7 +32,7 @@
 - **`faden.Runtime` runs one command to its end** and returns output and exit code; a non-zero exit is a result, not an error. `faden.Local` runs it through `os/exec` in a directory and kills the process group when stopped.
 - ~~**llama.cpp stores the user message itself** on the first attempt. A continuation that finds no stored user message for its turn fails with "send a new turn", because the runner no longer holds the input then.~~ *Changed 2026-11-02: a crash before that event failed a turn whose input was in the store (forge review of #1).*
 - **The runner stores each turn's user message,** once, after any handover event and before the backend runs. A backend stores only what its agent says and does. The input is in the store from `Submit` on, so no crash can lose it, and a continuation prompt never enters the thread as something the user said.
-- **Codex is parked** until Claude and llama.cpp work. sidenote's `codex app-server` adapter is the starting point.
+- ~~**Codex is parked** until Claude and llama.cpp work.~~ *Superseded 2026-11-02: the `codex` backend exists, see "Decided 2026-11-02 — Codex".*
 
 ### Runtimes
 
@@ -62,7 +62,7 @@
 ## Open
 
 - **Thread reading from a container:** loopback on the host is not reachable from a container without host networking, which forge's boundary forbids. Candidates: a unix socket mounted into the container, or no `read_thread` for container runs.
-- **Codex without a prompt:** read how t3code's Codex adapter continues a turn.
+- ~~**Codex without a prompt:** read how t3code's Codex adapter continues a turn.~~ *Answered 2026-11-02: `turn/start` with no input items after `thread/resume` (t3code `CodexSessionRuntime.ts`, capability `promptlessTurnContinuation`).*
 
 ## Measured 2026-11-02 — Claude resume after a kill
 
@@ -83,3 +83,19 @@ llama.cpp rebuilds its native messages and inserts portable messages at incoming
 ## Decided 2026-11-01 — thread reading over MCP
 
 `mcp.Server` listens on a loopback port and serves `read_thread` as JSON-RPC over HTTP POST (`initialize`, `ping`, `tools/list`, `tools/call`). Each session has its own token, granted per turn and revoked when the turn ends. A wrong token gets 401; a `session` argument other than the token's session is a tool error. `claude.Config.Threads` makes the backend write a temporary `--mcp-config` file whose `Authorization` header is `Bearer ${FADEN_MCP_TOKEN}`. The token reaches Claude only through its environment, so this needs `faden.Local` (`Local.WithEnv`). Container runs stay open, as above.
+
+## Decided 2026-11-02 — Codex
+
+Package `codex` runs `codex app-server` through a runtime with `RunStream` and speaks JSON-RPC over stdio: `initialize`, `initialized`, then `thread/start` (new session) or `thread/resume` with the stored thread id, then `turn/start`. The cursor is `{"thread_id": ...}`. It is stored as soon as `thread/start` answers, before `turn/start` is sent.
+
+Completed items become events, each with the notification as its native payload: `agentMessage` is assistant text; `commandExecution`, `fileChange` and `mcpToolCall` are a tool call (with its action) followed by a tool result; `turn/completed` is the end of the turn, and a status other than `completed` fails the turn. The backend does not store the user message.
+
+Codex continues without a prompt: after `thread/resume`, `turn/start` carries an empty `input` list. `ContinuesWithoutPrompt` is true, so the runner sends no continuation text. Approval requests from Codex are declined (`decline`; the legacy requests get `denied`); other server requests get a "not supported" error. The host's sandbox and approval settings pass as `Config.Args` to `codex app-server` (`-c sandbox_mode=...`). A handover puts the catch-up block before the request, as the Claude backend does. When the input is empty the catch-up is not added.
+
+Stdin is an `os.Pipe`, not an `io.Pipe`: a pipe the child reads directly leaves no copying goroutine that could keep the runtime waiting after a crashed Codex.
+
+The protocol shapes come from sidenote's adapter and t3code as described in the issue; neither source nor a `codex` binary was available when this was written, so the fake in `codex/codex_test.go` uses invented lines in the shapes remembered from the app-server schema. Check them against a real run.
+
+### Measured — Codex resume after a kill
+
+**Not measured yet.** `FADEN_LIVE=1 go test -v ./codex -run TestLiveResumeAfterKill` kills the host after `first.txt` is written, continues with no prompt, and logs `Codex knowledge of first file: known|unknown|indeterminate`. No `codex` binary was available in the run that added the test. Whoever runs it records the result here.
