@@ -59,13 +59,14 @@
 
 ## Open
 
-- **Claude resume after a kill:** does `--resume` see the work before the kill? Measure with a live test before the continue prompt is final.
 - **Thread reading from a container:** loopback on the host is not reachable from a container without host networking, which forge's boundary forbids. Candidates: a unix socket mounted into the container, or no `read_thread` for container runs.
 - **Codex without a prompt:** read how t3code's Codex adapter continues a turn.
 
-## Open 2026-11-01 — Claude resume after a kill
+## Measured 2026-11-02 — Claude resume after a kill
 
-The live measurement is unverified. The live command fails because this environment has no `claude` executable. `FADEN_LIVE=1 go test -v ./claude -run TestLiveResumeAfterKill` runs the experiment when the host supplies both. It kills the host after `first.txt` appears, resumes with the continuation prompt, checks the remaining files, and logs Claude's answer. The answer must be reviewed for evidence that Claude knew about the first file before inspecting the workspace. The synthetic parser fixture is not a recording from a real run; that acceptance requirement remains open.
+**`--resume` does not see the work of a killed turn.** `FADEN_LIVE=1 go test -v ./claude -run TestLiveResumeAfterKill` (claude 2.1.316) killed the host after `first.txt` was written. Claude's own session file then held only the user prompt; the resumed session inserted "No response requested." in place of the killed turn's work. Resumed with "Continue where you left off.", Claude answered `FIRST_FILE_UNKNOWN` and wrote `first.txt` again. One run, but the session file is direct evidence.
+
+Consequence: faden's stored events are the only record of a killed Claude turn. The continuation prompt alone repeats the work; a continuation that carries the turn's stored events is proposed in an issue, because it changes "Claude Code gets 'Continue where you left off.'" above.
 
 ## Decided 2026-11-01 — Claude runtime streaming
 
