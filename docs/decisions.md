@@ -98,4 +98,4 @@ The protocol shapes come from sidenote's adapter and t3code as described in the 
 
 ### Measured — Codex resume after a kill
 
-**Not measured yet.** `FADEN_LIVE=1 go test -v ./codex -run TestLiveResumeAfterKill` kills the host after `first.txt` is written, continues with no prompt, and logs `Codex knowledge of first file: known|unknown|indeterminate`. No `codex` binary was available in the run that added the test. Whoever runs it records the result here.
+**Measured 2026-11-02 (codex-cli 0.166.0): Codex does not know the killed turn's result either.** `FADEN_LIVE=1 go test -v ./codex -run TestLiveResumeAfterKill` killed the host after `first.txt` was written. Codex's own rollout kept the killed turn's assistant message and its first tool call, but not the tool's output. Continued with no prompt, Codex answered `FIRST_FILE_UNKNOWN`, then checked the workspace and found `first.txt` instead of writing it again. One run. Like Claude, the killed turn's results live only in faden's store; #14 proposes carrying them into the continuation.
