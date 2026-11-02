@@ -32,6 +32,7 @@ type request struct {
 	Model    string `json:"model"`
 	Messages []struct {
 		Role       string `json:"role"`
+		Reasoning  string `json:"reasoning_content"`
 		Content    string `json:"content"`
 		ToolCallID string `json:"tool_call_id"`
 	} `json:"messages"`
@@ -427,6 +428,9 @@ func TestKilledBetweenBashCallAndResultDoesNotRunBashAgain(t *testing.T) {
 		t.Fatalf("bash ran %q, want one run", ran)
 	}
 	msgs := rec.sent()[0].Messages
+	if msgs[1].Reasoning != "I will run the invented command." {
+		t.Fatalf("rebuilt messages lost reasoning: %+v", msgs)
+	}
 	if last := msgs[len(msgs)-1]; last.Role != "tool" || !strings.Contains(last.Content, "interrupted") {
 		t.Fatalf("model saw %+v", last)
 	}

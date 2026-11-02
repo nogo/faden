@@ -181,3 +181,9 @@ Rejected: one constructor for all backends (`faden.New("claude", cfg)`), which n
 - Effort and model flags come from the host's own record of the turn, through `Args`. `Turn` gets no new field.
 
 Rejected: one hook per backend config, which wires the same thing in three places; values in the context, which hide a required input from the signature.
+
+## Decided 2026-11-02 — llama reasoning (#22)
+
+**llama keeps `reasoning_content` only in the assistant's native payload.** The next model request carries it, including after continuation rebuilds the messages. Empty reasoning is omitted. `Event.Text` remains the answer; handover and `read_thread` expose no reasoning.
+
+Measured with `mise exec -- go test ./llama -run TestReasoningStaysNative -v`: one invented JSONL run stored 1,695 bytes before and 1,741 bytes after. The server returned “I will add two and three.” with an `add` call, followed by “All done.” The measurement counts the session file, including turn records and events. Reasoning adds storage for the native field; it is not copied into normalized text. This is a storage measurement, not a heap-memory claim.

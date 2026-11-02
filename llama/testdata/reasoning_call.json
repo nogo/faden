@@ -1,0 +1,1 @@
+{"choices":[{"message":{"role":"assistant","content":"Adding.","reasoning_content":"I will add two and three.","tool_calls":[{"id":"call_b1","type":"function","function":{"name":"add","arguments":"{\"a\":2,\"b\":3}"}}]}}]}

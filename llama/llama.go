@@ -76,6 +76,7 @@ func (b *Backend) Stop(ctx context.Context, t faden.Turn) error {
 // message is one chat message in the OpenAI format.
 type message struct {
 	Role       string     `json:"role"`
+	Reasoning  string     `json:"reasoning_content,omitempty"`
 	Content    string     `json:"content"`
 	ToolCalls  []toolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
