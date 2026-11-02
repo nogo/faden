@@ -75,7 +75,7 @@ func TestToolOutputIsCutStoredAndSentCut(t *testing.T) {
 	srv := httptest.NewServer(ls)
 	t.Cleanup(srv.Close)
 	store := openStore(t, t.TempDir())
-	b, _ := llama.New(llama.Config{URL: srv.URL, Tools: []llama.Tool{bigTool()}, MaxOutput: 1000})
+	b, _ := llama.New(llama.Config{URL: srv.URL + "/v1", Tools: []llama.Tool{bigTool()}, MaxOutput: 1000})
 	if got := run(t, store, b, "r1", "go"); got.Status != faden.Done {
 		t.Fatalf("turn = %+v", got)
 	}
@@ -104,7 +104,7 @@ func TestToolOutputDefaultLimitIs12000Bytes(t *testing.T) {
 	srv := httptest.NewServer(ls)
 	t.Cleanup(srv.Close)
 	store := openStore(t, t.TempDir())
-	b, _ := llama.New(llama.Config{URL: srv.URL, Tools: []llama.Tool{bigTool()}})
+	b, _ := llama.New(llama.Config{URL: srv.URL + "/v1", Tools: []llama.Tool{bigTool()}})
 	run(t, store, b, "r1", "go")
 	out := resultOutputs(t, store)[0]
 	body, _, _ := strings.Cut(out, "\n[output cut")
@@ -117,7 +117,7 @@ func TestShortToolOutputIsNotChanged(t *testing.T) {
 	_, srv := newReplay(t, "add_call.json", "final.json")
 	store := openStore(t, t.TempDir())
 	var runs int
-	b, _ := llama.New(llama.Config{URL: srv.URL, Tools: []llama.Tool{addTool(&runs)}, MaxOutput: 1})
+	b, _ := llama.New(llama.Config{URL: srv.URL + "/v1", Tools: []llama.Tool{addTool(&runs)}, MaxOutput: 1})
 	run(t, store, b, "r1", "2+3")
 	if outs := resultOutputs(t, store); len(outs) != 1 || outs[0] != "5" {
 		t.Fatalf("results = %q", outs)
@@ -128,7 +128,7 @@ func TestBashAndReadThreadOutputAreCut(t *testing.T) {
 	_, srv := newReplay(t, "bash_call.json", "final.json")
 	dir := t.TempDir()
 	store := openStore(t, t.TempDir())
-	b, _ := llama.New(llama.Config{URL: srv.URL, Runtime: faden.Local{PIDDir: dir, Dir: dir}, MaxOutput: 5})
+	b, _ := llama.New(llama.Config{URL: srv.URL + "/v1", Runtime: faden.Local{PIDDir: dir, Dir: dir}, MaxOutput: 5})
 	run(t, store, b, "r1", "go")
 	outs := resultOutputs(t, store)
 	if len(outs) != 1 || !strings.Contains(outs[0], "[output cut at 5 bytes]") {
@@ -146,7 +146,7 @@ func TestMaxTokensIsSentOnlyWhenSet(t *testing.T) {
 			ls := &loopServer{stopAt: 1}
 			srv := httptest.NewServer(ls)
 			t.Cleanup(srv.Close)
-			b, _ := llama.New(llama.Config{URL: srv.URL, MaxTokens: tc.tokens})
+			b, _ := llama.New(llama.Config{URL: srv.URL + "/v1", MaxTokens: tc.tokens})
 			run(t, openStore(t, t.TempDir()), b, "r1", "go")
 			has := strings.Contains(ls.bodies[0], "max_tokens")
 			if tc.want == "" && has || tc.want != "" && !strings.Contains(ls.bodies[0], tc.want) {
@@ -165,7 +165,7 @@ func TestMaxStepsBoundsModelCalls(t *testing.T) {
 			ls := &loopServer{}
 			srv := httptest.NewServer(ls)
 			t.Cleanup(srv.Close)
-			b, _ := llama.New(llama.Config{URL: srv.URL, Tools: []llama.Tool{bigTool()}, MaxSteps: tc.steps, MaxOutput: 10})
+			b, _ := llama.New(llama.Config{URL: srv.URL + "/v1", Tools: []llama.Tool{bigTool()}, MaxSteps: tc.steps, MaxOutput: 10})
 			got := run(t, openStore(t, t.TempDir()), b, "r1", "go")
 			if got.Status != faden.Failed || !strings.Contains(got.Error, "no final answer") {
 				t.Fatalf("turn = %+v", got)
@@ -185,7 +185,7 @@ func TestStoredBytesOfLargeToolOutput(t *testing.T) {
 	t.Cleanup(srv.Close)
 	dir := t.TempDir()
 	store := openStore(t, dir)
-	b, _ := llama.New(llama.Config{URL: srv.URL, Tools: []llama.Tool{bigTool()}})
+	b, _ := llama.New(llama.Config{URL: srv.URL + "/v1", Tools: []llama.Tool{bigTool()}})
 	run(t, store, b, "r1", "go")
 	info, err := os.Stat(dir + "/s1.jsonl")
 	if err != nil {

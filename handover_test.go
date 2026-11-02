@@ -64,7 +64,7 @@ func TestHandoverAcrossAdapters(t *testing.T) {
 		io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"llama answer"}}]}`)
 	}))
 	defer server.Close()
-	lb, err := llama.New(llama.Config{URL: server.URL})
+	lb, err := llama.New(llama.Config{URL: server.URL + "/v1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +277,7 @@ func TestLlamaJoiningLaterSeesEarlierMessagesOnce(t *testing.T) {
 	rec := &llamaRecorder{}
 	srv := httptest.NewServer(rec)
 	defer srv.Close()
-	lb, err := llama.New(llama.Config{URL: srv.URL})
+	lb, err := llama.New(llama.Config{URL: srv.URL + "/v1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,7 +299,7 @@ func TestLlamaReturningKeepsItsOwnFirstTurn(t *testing.T) {
 	rec := &llamaRecorder{}
 	srv := httptest.NewServer(rec)
 	defer srv.Close()
-	lb, err := llama.New(llama.Config{URL: srv.URL})
+	lb, err := llama.New(llama.Config{URL: srv.URL + "/v1"})
 	if err != nil {
 		t.Fatal(err)
 	}

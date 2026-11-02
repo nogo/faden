@@ -199,3 +199,11 @@ Measured with `mise exec -- go test ./llama -run TestReasoningStaysNative -v`: o
 Measured with `go test ./llama -run StoredBytes -v` (session file with one user message, two answers, one call and one 100 KB tool result): 103,990 bytes with `MaxOutput` set to 1 GiB (no cut, as before), 13,619 bytes with the default 12,000. This is a storage measurement, not a heap measurement.
 
 Rejected: cutting inside each tool, which leaves host tools uncut; a limit in tokens, which needs a tokenizer.
+
+## Decided 2026-11-02 — hosted llama endpoints and retry (#24)
+
+**`llama.Config.URL` includes the API version.** The backend appends `/chat/completions`, so local `/v1` and OpenRouter `/api/v1` bases use the same loop. This supersedes the implicit unversioned base in the first backend design. No host consumes it yet.
+
+**`Config.Key` is an optional bearer token supplied by the host.** It stays in backend configuration and the Authorization header. Errors omit response bodies and redact the key from transport errors, because either can echo credentials.
+
+**A model call gets at most four attempts.** Network failures, 429 and 5xx retry after 1, 2 and 4 seconds. A longer `Retry-After` wins, in seconds or HTTP date form. Other HTTP failures and malformed JSON do not retry. Cancellation interrupts requests and waits. Failed calls emit no events; successful earlier calls in the turn remain stored. Retries do not consume additional `MaxSteps`, which bounds model answers in the loop.

@@ -17,7 +17,7 @@ func TestReasoningStaysNative(t *testing.T) {
 	dir := t.TempDir()
 	store := openStore(t, dir)
 	var runs int
-	b, err := llama.New(llama.Config{URL: srv.URL, Tools: []llama.Tool{addTool(&runs)}})
+	b, err := llama.New(llama.Config{URL: srv.URL + "/v1", Tools: []llama.Tool{addTool(&runs)}})
 	if err != nil {
 		t.Fatal(err)
 	}

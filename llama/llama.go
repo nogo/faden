@@ -18,7 +18,9 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/nogo/faden"
 	"github.com/nogo/faden/handover"
@@ -31,8 +33,10 @@ const (
 
 // Config wires a Backend.
 type Config struct {
-	// URL is the server's base address, such as http://localhost:8080.
+	// URL includes the API version, such as http://localhost:8080/v1.
 	URL string
+	// Key is an optional bearer token supplied by the host. It is never stored.
+	Key string
 	// Model is used when a turn names none.
 	Model string
 	// Runtime runs the bash tool. Nil leaves bash out.
@@ -348,7 +352,12 @@ func (b *Backend) execute(ctx context.Context, tools map[string]Tool, tr *transc
 }
 
 // complete asks the server for the next assistant message.
-func (b *Backend) complete(ctx context.Context, model string, tools map[string]Tool, msgs []message) (message, error) {
+func (b *Backend) complete(ctx context.Context, model string, tools map[string]Tool, msgs []message) (answer message, callErr error) {
+	defer func() {
+		if callErr != nil && b.cfg.Key != "" && strings.Contains(callErr.Error(), b.cfg.Key) {
+			callErr = errors.New(strings.ReplaceAll(callErr.Error(), b.cfg.Key, "[redacted]"))
+		}
+	}()
 	type function struct {
 		Name        string          `json:"name"`
 		Description string          `json:"description"`
@@ -371,22 +380,48 @@ func (b *Backend) complete(ctx context.Context, model string, tools map[string]T
 	if err != nil {
 		return message{}, fmt.Errorf("llama: encode request: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(b.cfg.URL, "/")+"/v1/chat/completions", bytes.NewReader(body))
+	for attempt := 0; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return message{}, err
+		}
+		m, retry, delay, err := b.call(ctx, body)
+		if err == nil || !retry || attempt == 3 {
+			return m, err
+		}
+		delay = max(delay, time.Second<<attempt)
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return message{}, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+// call makes one request. Failed requests never reach the event store.
+func (b *Backend) call(ctx context.Context, body []byte) (message, bool, time.Duration, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(b.cfg.URL, "/")+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return message{}, fmt.Errorf("llama: request: %w", err)
+		return message{}, false, 0, fmt.Errorf("llama: request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if b.cfg.Key != "" {
+		req.Header.Set("Authorization", "Bearer "+b.cfg.Key)
+	}
 	resp, err := b.cfg.Client.Do(req)
 	if err != nil {
-		return message{}, fmt.Errorf("llama: call model: %w", err)
+		return message{}, true, 0, fmt.Errorf("llama: call model: %w", err)
 	}
 	defer resp.Body.Close()
+	retry := resp.StatusCode == 429 || resp.StatusCode >= 500 && resp.StatusCode <= 599
+	delay := retryAfter(resp.Header.Get("Retry-After"), time.Now())
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if err != nil {
-		return message{}, fmt.Errorf("llama: read answer: %w", err)
+		return message{}, retry || resp.StatusCode == http.StatusOK, delay, fmt.Errorf("llama: read answer: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return message{}, fmt.Errorf("llama: model answered %s: %.200s", resp.Status, raw)
+		return message{}, retry, delay, fmt.Errorf("llama: model answered %d", resp.StatusCode)
 	}
 	var parsed struct {
 		Choices []struct {
@@ -394,9 +429,20 @@ func (b *Backend) complete(ctx context.Context, model string, tools map[string]T
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(raw, &parsed); err != nil || len(parsed.Choices) == 0 {
-		return message{}, fmt.Errorf("llama: unreadable answer: %.200s", raw)
+		return message{}, false, 0, errors.New("llama: unreadable answer")
 	}
 	m := parsed.Choices[0].Message
 	m.Role = "assistant"
-	return m, nil
+	return m, false, 0, nil
+}
+
+func retryAfter(value string, now time.Time) time.Duration {
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil && seconds > 0 {
+		// Cap before converting to a duration to avoid overflow.
+		return time.Duration(min(seconds, int64((1<<63-1)/time.Second))) * time.Second
+	}
+	if date, err := http.ParseTime(value); err == nil {
+		return max(0, date.Sub(now))
+	}
+	return 0
 }

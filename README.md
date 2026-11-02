@@ -107,7 +107,7 @@ if err != nil {
 defer store.Close()
 
 model, err := llama.New(llama.Config{
-	URL:   "http://localhost:8080",
+	URL:   "http://localhost:8080/v1",
 	Model: "qwen-27b",
 	Tools: []llama.Tool{{
 		Name: "now",
