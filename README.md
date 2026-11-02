@@ -160,6 +160,29 @@ faden never touches these, by design:
 - the workspace, the container and its lifetime, and the CLI's own session files (`~/.claude`, `~/.codex`) across restarts;
 - scheduling, the user interface, and who may read which session.
 
+## Similar projects
+
+Surveyed in November 2026. Each is good at something faden doesn't try to do; pick by the row that matches your need.
+
+| Project | What it is | Pick it over faden when |
+|---|---|---|
+| [pi durable](https://github.com/earendil-works/pi/tree/main/packages/durable) (TypeScript) | The design faden started from: its own model loop, every step a checkpointed task, documents, forks, task trees | You want step-level durability and its own tools, not existing agent CLIs |
+| [Sandbox Agent](https://github.com/rivet-dev/agents) (TypeScript, Rust) | An HTTP server that runs coding agents over ACP in sandboxes and stores session events; after runtime loss it starts a fresh session and replays recent events | You want a service with sandboxes, desktop control and many agents behind HTTP |
+| [acpx](https://github.com/openclaw/acpx) (TypeScript) | A headless ACP client: persistent named sessions, prompt queues, crash recovery through ACP `session/resume` or `session/load` | You drive agents from scripts or the shell, and ACP's own resume is enough |
+| [t3code](https://github.com/pingdotgg/t3code) (TypeScript) | A GUI for coding agents; its context handoffs between providers are where faden's handover selection comes from | You want an app, not a library |
+| [Duragent](https://github.com/giosakti/duragent) (Rust) | A single-binary agent runtime with its own loop; agents are YAML and Markdown files, sessions an append-only log | You want a ready runtime with file-defined agents |
+| [harness-kernel](https://github.com/sagapranav/harness-kernel) (TypeScript) | Journal primitives: causal event journal, leases, receipts, interrupted actions checked against outside conditions | You build your own harness and need distributed writers |
+| [Everruns](https://github.com/everruns/everruns) (Rust) | A durable agent framework with typed tools, and a self-hosted platform | You build agents in Rust and want a managed platform |
+
+What faden does that none of these do in the documentation I read:
+
+- **One interface over both kinds of agent.** Claude Code and Codex own their loop; llama.cpp runs in faden's loop and stores every tool call before it runs. A host writes the same code for both.
+- **A killed turn continues with its own stored events,** on top of the CLI's native resume. Measured: the native resume of Claude Code and Codex forgets a killed turn's results; with faden's events, both went on without redoing finished work.
+- **Handover between agents within one session,** with a cursor per agent: a returning agent resumes its own native session and gets only what happened since.
+- **The host's own store and transaction.** faden is a library, not a service: sessions live in your SQLite file beside your data, and a submission can commit with your own write.
+
+What faden does not do (yet): streaming to a live view, approvals, ACP agents, sandboxes it starts itself, more than one writing process per store.
+
 ## Status
 
 Personal project, young, API may change. Live-tested on one machine with Claude Code 2.1.316, codex-cli 0.166.0 and llama.cpp.
