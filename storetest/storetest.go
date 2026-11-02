@@ -154,6 +154,27 @@ func Run(t *testing.T, newStorage func(t *testing.T) Storage) {
 		}
 	})
 
+	t.Run("LaterSubmitKeepsSession", func(t *testing.T) {
+		st := newStorage(t)
+		s := st.Open()
+		s.SubmitTurn(ctx, turn("r1", "s1"))
+		s.SetCursor(ctx, "s1", "a", json.RawMessage(`{"n":1}`))
+		before, _ := s.Session(ctx, "s1")
+		other := turn("r2", "s1")
+		other.Backend = "b"
+		if _, err := s.SubmitTurn(ctx, other); err != nil {
+			t.Fatal(err)
+		}
+		s.Close()
+
+		s = st.Open()
+		defer s.Close()
+		sess, err := s.Session(ctx, "s1")
+		if err != nil || string(sess.Cursors["a"]) != `{"n":1}` || !sess.Created.Equal(before.Created) {
+			t.Fatalf("session after a later submit = %+v, %v; created before %v", sess, err, before.Created)
+		}
+	})
+
 	t.Run("UnfinishedListsPendingAndRunningOldestFirst", func(t *testing.T) {
 		s := newStorage(t).Open()
 		defer s.Close()
