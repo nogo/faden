@@ -11,11 +11,20 @@ Base: [Effective Go](https://go.dev/doc/effective_go), [Go Code Review Comments]
 ## Go
 
 ### Structure
-- faden is embedded by other systems. The root package `faden` holds the session, turn, event, `Store` and `Backend` types and the runner. Every other concept is a package at the module root (`jsonl/`, `sqlite/`, `storetest/`, `claude/`, `llama/`, `container/`, `handover/`); a package no host imports lives under `internal/`.
+- faden is embedded by other systems. The root package `faden` holds the session, turn, event, `Store`, `Backend` and `Attempt` types and the runner. Every other concept is a package at the module root (`jsonl/`, `sqlite/`, `storetest/`, `claude/`, `llama/`, `container/`, `handover/`); a package no host imports lives under `internal/`.
 - One concept per package, named for it, never `util` or `common`.
 - Every package starts with a package comment saying what it is and when to reach for it; `doc.go` when the package has several files.
 - An interface is declared where it's consumed and holds only the methods that consumer calls. `Store` and `Backend` are the exceptions: hosts implement them, so they live in the root package.
 - A package doesn't construct its own collaborators. The host wires stores, backends and runtimes.
+
+### Module API
+What a host sees is the product. Keep it small; every exported name is a promise.
+- A host passes each collaborator once. The store goes to `faden.Open`, a backend's name is its map key; nothing else repeats them.
+- Return concrete types. A type faden hands to code a host writes (`Attempt`) is a struct, so it can grow a method without breaking anyone. Adding a method to an interface breaks every implementer.
+- Configure with a struct when callers set its fields, as backends do. A new field's zero value keeps the old behaviour. Reach for functional options only when most callers set nothing.
+- No field faden writes but never reads. No run-time field on a stored type (`json:"-"`); it belongs on the type that lives for the run.
+- No signature change and no interface method without a line in `docs/decisions.md`: each one breaks every caller. While the module is young, break once for a whole change, not once per step.
+- Extend a function with a field on its options struct, never with a new variadic parameter: that breaks callers that hold the function as a value.
 
 ### Naming
 - Short receivers, same name on every method of a type.
