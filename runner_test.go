@@ -326,3 +326,50 @@ func readSession(t *testing.T, dir string) string {
 	}
 	return string(b)
 }
+
+func TestContinuationCarriesTheKilledTurnsStoredEvents(t *testing.T) {
+	for name, promptless := range map[string]bool{"prompt": false, "none": true} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			seedRunning(t, dir, 1)
+			s := openStore(t, dir)
+			for _, e := range []faden.Event{
+				{Kind: faden.UserMessage, Text: "original"},
+				{Kind: faden.ToolCall, Tool: "bash", Action: "echo first > first.txt"},
+				{Kind: faden.ToolResult, Tool: "bash", Output: "wrote first.txt"},
+			} {
+				e.Session, e.RequestID = "s1", "r1"
+				if _, err := s.AppendEvent(t.Context(), e); err != nil {
+					t.Fatal(err)
+				}
+			}
+			s.Close()
+
+			store := openStore(t, dir)
+			var turn faden.Turn
+			b := &fake{promptless: promptless, run: func(_ context.Context, got faden.Turn, _ json.RawMessage, _ func(faden.Event) error) (json.RawMessage, error) {
+				turn = got
+				return nil, nil
+			}}
+			r, err := faden.Open(store, map[string]faden.Backend{"fake": b})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer r.Close()
+			wait(t, r, "r1")
+			var block string
+			for _, e := range turn.CatchUp {
+				block += e.Action + "|" + e.Output + "\n"
+			}
+			if promptless {
+				if len(turn.CatchUp) != 0 {
+					t.Fatalf("promptless backend got catch-up %+v", turn.CatchUp)
+				}
+				return
+			}
+			if turn.Input != "Continue where you left off." || !strings.Contains(block, "echo first > first.txt") || !strings.Contains(block, "wrote first.txt") {
+				t.Fatalf("input %q, catch-up %q", turn.Input, block)
+			}
+		})
+	}
+}
