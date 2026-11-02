@@ -159,3 +159,9 @@ Rejected: an exit-code field, which Claude cannot fill; `[exit N]` appended to O
 Measured after the change: `FADEN_LIVE=1 go test -v ./claude ./codex -run TestLiveResumeAfterKill` (claude 2.1.316, codex-cli 0.166.0) answered `FIRST_FILE_KNOWN` on both and finished all three files. One run each.
 
 Rejected: one constructor for all backends (`faden.New("claude", cfg)`), which needs one config whose fields mostly apply to one backend; a `faden.Open` that creates jsonl or sqlite itself, which is an import cycle; an interface for the attempt, which is easier to fake but breaks every backend when it grows.
+
+## Decided 2026-11-02 — release
+
+- **`go 1.27` in `go.mod`, not a patch version.** The `go` line is a minimum for every host that embeds faden; `go 1.27.3` would force sidenote (on 1.27.1) to upgrade. `mise.toml` still pins the toolchain faden is checked with.
+- **MIT license.** The shortest common license that pkg.go.dev recognizes. Rejected: Apache-2.0, whose patent grant and NOTICE rules weigh more than a personal library needs; BSD-3, whose extra clause adds nothing here.
+- **CI runs `mise run check`,** the local gate, on Linux. Actions are pinned by commit SHA.

@@ -186,3 +186,7 @@ What faden does not do (yet): streaming to a live view, approvals, ACP agents, s
 
 Personal project, young, API may change. Live-tested on one machine with Claude Code 2.1.316, codex-cli 0.166.0 and llama.cpp.
 The reasons behind each choice are in `docs/decisions.md`; the goal is in `docs/project.md`.
+
+## License
+
+MIT, see `LICENSE`.
