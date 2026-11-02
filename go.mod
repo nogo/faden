@@ -1,6 +1,6 @@
 module github.com/nogo/faden
 
-go 1.27.3
+go 1.27
 
 require modernc.org/sqlite v1.61.1
 
