@@ -24,11 +24,12 @@ type Runner struct {
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
 
-	mu      sync.Mutex // guards active, turns, changed and fatal
-	turns   map[string]context.CancelFunc
-	active  map[string]bool // sessions with a worker
-	changed chan struct{}   // closed and replaced when a turn reaches a final status
-	fatal   error           // first store error a worker met
+	mu       sync.Mutex // guards active, turns, changed, draining and fatal
+	turns    map[string]context.CancelFunc
+	active   map[string]bool // sessions with a worker
+	changed  chan struct{}   // closed and replaced when a turn reaches a final status
+	fatal    error           // first store error a worker met
+	draining bool            // Drain was called: no turn starts
 }
 
 // catchUp derives the boundary from executed turns, not the queued session backend.
@@ -300,10 +301,30 @@ func (r *Runner) Close() error {
 	return nil
 }
 
+// Drain starts no new turn and waits for the running turns to end. Turns
+// submitted meanwhile stay pending. When ctx is done first, Drain closes the
+// runner as Close does and returns the context's error; the turns still
+// running continue on the next Open. The host sets the grace period with
+// the deadline of ctx.
+func (r *Runner) Drain(ctx context.Context) error {
+	r.mu.Lock()
+	r.draining = true
+	r.mu.Unlock()
+	done := make(chan struct{})
+	go func() { r.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		r.Close()
+		return fmt.Errorf("faden: drain: %w", ctx.Err())
+	}
+}
+
 func (r *Runner) kick(session string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.active[session] || r.ctx.Err() != nil {
+	if r.active[session] || r.draining || r.ctx.Err() != nil {
 		return
 	}
 	r.active[session] = true
@@ -315,7 +336,7 @@ func (r *Runner) work(session string) {
 	for {
 		r.mu.Lock()
 		t, ok, err := r.next(session)
-		if !ok || err != nil || r.ctx.Err() != nil {
+		if !ok || err != nil || r.ctx.Err() != nil || (r.draining && t.Status != Running) {
 			r.active[session] = false
 			r.mu.Unlock()
 			if err != nil {

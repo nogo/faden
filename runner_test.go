@@ -679,3 +679,85 @@ func TestCancelPendingDoesNotAdvanceBackendHistory(t *testing.T) {
 		t.Fatalf("handover lost history or cancellation: %+v", catchUp)
 	}
 }
+
+func TestDrainLetsRunningTurnFinishAndKeepsPendingPending(t *testing.T) {
+	dir := t.TempDir()
+	store := openStore(t, dir)
+	started, release := make(chan struct{}), make(chan struct{})
+	b := &fake{run: func(ctx context.Context, turn faden.Turn, a *faden.Attempt) error {
+		if turn.RequestID != "running" {
+			t.Errorf("turn %s started during drain", turn.RequestID)
+			return nil
+		}
+		close(started)
+		select {
+		case <-release:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}}
+	r, err := faden.Open(store, map[string]faden.Backend{"fake": b})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	r.Submit(t.Context(), sub("s", "running", "one"))
+	<-started
+	r.Submit(t.Context(), sub("s", "pending", "two"))
+	drained := make(chan error, 1)
+	go func() { drained <- r.Drain(t.Context()) }()
+	select {
+	case err := <-drained:
+		t.Fatalf("Drain returned %v before the turn ended", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	late, err := r.Submit(t.Context(), sub("s", "late", "three"))
+	if err != nil || late.Status != faden.Pending {
+		t.Fatalf("Submit during drain = %+v, %v", late, err)
+	}
+	close(release)
+	if err := <-drained; err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[string]faden.Status{"running": faden.Done, "pending": faden.Pending, "late": faden.Pending} {
+		if got, err := store.Turn(t.Context(), id); err != nil || got.Status != want {
+			t.Fatalf("%s = %+v, %v; want %s", id, got, err, want)
+		}
+	}
+}
+
+func TestDrainPastDeadlineLeavesTurnRunningForNextOpen(t *testing.T) {
+	dir := t.TempDir()
+	store := openStore(t, dir)
+	started := make(chan struct{})
+	b := &fake{run: func(ctx context.Context, turn faden.Turn, a *faden.Attempt) error {
+		close(started)
+		<-ctx.Done()
+		return ctx.Err()
+	}}
+	r, err := faden.Open(store, map[string]faden.Backend{"fake": b})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Submit(t.Context(), sub("s", "slow", "one"))
+	<-started
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	if err := r.Drain(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Drain = %v, want deadline exceeded", err)
+	}
+	got, err := store.Turn(t.Context(), "slow")
+	if err != nil || got.Status != faden.Running || got.Attempts != 1 {
+		t.Fatalf("after drain: %+v, %v", got, err)
+	}
+	b2 := &fake{run: func(context.Context, faden.Turn, *faden.Attempt) error { return nil }}
+	r2, err := faden.Open(store, map[string]faden.Backend{"fake": b2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r2.Close()
+	if got := wait(t, r2, "slow"); got.Status != faden.Done || got.Attempts != 2 {
+		t.Fatalf("after reopen: %+v", got)
+	}
+}
