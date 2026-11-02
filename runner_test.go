@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/nogo/faden"
+	"github.com/nogo/faden/handover"
 	"github.com/nogo/faden/jsonl"
 )
 
@@ -513,5 +514,168 @@ func TestFailureKindIsStoredWithTheTurn(t *testing.T) {
 				t.Fatalf("stored = %+v", stored)
 			}
 		})
+	}
+}
+
+func TestCancelPendingAndRunning(t *testing.T) {
+	dir := t.TempDir()
+	store := openStore(t, dir)
+	started := make(chan struct{})
+	b := &fake{run: func(ctx context.Context, turn faden.Turn, a *faden.Attempt) error {
+		if turn.RequestID == "running" {
+			close(started)
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		if turn.RequestID == "pending" {
+			t.Error("cancelled pending turn ran")
+		}
+		return nil
+	}}
+	r, err := faden.Open(store, map[string]faden.Backend{"fake": b})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	r.Submit(t.Context(), sub("s", "running", "one"))
+	<-started
+	r.Submit(t.Context(), sub("s", "pending", "two"))
+	r.Submit(t.Context(), sub("s", "next", "three"))
+	r.Submit(t.Context(), sub("other", "other", "four"))
+	for _, id := range []string{"pending", "running"} {
+		for range 2 {
+			got, err := r.Cancel(t.Context(), id)
+			if err != nil || got.Status != faden.Cancelled {
+				t.Fatalf("Cancel(%s) = %+v, %v", id, got, err)
+			}
+		}
+		if got := wait(t, r, id); got.Status != faden.Cancelled {
+			t.Fatal(got)
+		}
+	}
+	for _, id := range []string{"next", "other"} {
+		if got := wait(t, r, id); got.Status != faden.Done {
+			t.Fatal(got)
+		}
+		if got, err := r.Cancel(t.Context(), id); err != nil || got.Status != faden.Done {
+			t.Fatalf("final cancel = %+v, %v", got, err)
+		}
+	}
+	r.Close()
+	b.mu.Lock()
+	stopped := append([]string(nil), b.stopped...)
+	b.mu.Unlock()
+	if !reflect.DeepEqual(stopped, []string{"running"}) {
+		t.Fatalf("Stop = %v", stopped)
+	}
+	events, err := store.Events(t.Context(), "s", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, e := range events {
+		if e.Kind == faden.TurnEnded && e.Text == "cancelled" {
+			count++
+		}
+	}
+	if count != 2 {
+		t.Fatalf("cancel events = %d", count)
+	}
+	thread, err := handover.ReadThread(t.Context(), store, "s", json.RawMessage(`{"from":1,"to":100}`))
+	if err != nil || strings.Count(thread, `"text":"cancelled"`) != 2 {
+		t.Fatalf("read_thread = %s, %v", thread, err)
+	}
+	var selected strings.Builder
+	for _, item := range handover.Select(events, "continue", 16000) {
+		selected.WriteString(item.Text)
+	}
+	if strings.Count(selected.String(), "turn_ended  cancelled") != 2 {
+		t.Fatalf("handover = %s", selected.String())
+	}
+	store.Close()
+	store = openStore(t, dir)
+	r, err = faden.Open(store, map[string]faden.Backend{"fake": b})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if got := wait(t, r, "running"); got.Status != faden.Cancelled || got.Attempts != 1 {
+		t.Fatal(got)
+	}
+}
+
+func TestCancelFailedTurnAndUnknownRequest(t *testing.T) {
+	store := openStore(t, t.TempDir())
+	b := &fake{run: func(context.Context, faden.Turn, *faden.Attempt) error { return errors.New("invented failure") }}
+	r, err := faden.Open(store, map[string]faden.Backend{"fake": b})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if _, err := r.Submit(t.Context(), sub("s", "failed", "fail")); err != nil {
+		t.Fatal(err)
+	}
+	want := wait(t, r, "failed")
+	got, err := r.Cancel(t.Context(), "failed")
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("cancel = %+v, %v; want %+v", got, err, want)
+	}
+	if _, err := r.Cancel(t.Context(), "unknown"); !errors.Is(err, faden.ErrNotFound) {
+		t.Fatalf("unknown cancel: %v", err)
+	}
+}
+
+func TestCancelPendingDoesNotAdvanceBackendHistory(t *testing.T) {
+	store := openStore(t, t.TempDir())
+	started, release := make(chan struct{}), make(chan struct{})
+	first := &fake{run: func(ctx context.Context, _ faden.Turn, _ *faden.Attempt) error {
+		close(started)
+		select {
+		case <-release:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}}
+	var catchUp []faden.Event
+	second := &fake{run: func(_ context.Context, turn faden.Turn, a *faden.Attempt) error {
+		if turn.RequestID != "next" {
+			t.Error("cancelled backend ran")
+		}
+		catchUp, _ = a.CatchUp()
+		return nil
+	}}
+	r, err := faden.Open(store, map[string]faden.Backend{"fake": first, "second": second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if _, err := r.Submit(t.Context(), sub("s", "first", "original history")); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	pending := sub("s", "pending", "withdrawn")
+	pending.Backend = "second"
+	if _, err := r.Submit(t.Context(), pending); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Cancel(t.Context(), "pending"); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	wait(t, r, "first")
+	next := sub("s", "next", "continue")
+	next.Backend = "second"
+	if _, err := r.Submit(t.Context(), next); err != nil {
+		t.Fatal(err)
+	}
+	wait(t, r, "next")
+	var history, cancellation bool
+	for _, e := range catchUp {
+		history = history || e.Kind == faden.UserMessage && e.Text == "original history"
+		cancellation = cancellation || e.RequestID == "pending" && e.Kind == faden.TurnEnded && e.Text == "cancelled"
+	}
+	if !history || !cancellation {
+		t.Fatalf("handover lost history or cancellation: %+v", catchUp)
 	}
 }

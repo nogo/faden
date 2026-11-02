@@ -29,6 +29,29 @@ type Storage struct {
 // Run runs the suite. newStorage returns a fresh Storage for each test.
 func Run(t *testing.T, newStorage func(t *testing.T) Storage) {
 	ctx := context.Background()
+	t.Run("CancelledSurvivesReopen", func(t *testing.T) {
+		st := newStorage(t)
+		s := st.Open()
+		turn, err := s.SubmitTurn(ctx, faden.Turn{RequestID: "cancel", Session: "s", Backend: "a"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		turn.Status = faden.Cancelled
+		if err := s.SaveTurn(ctx, turn); err != nil {
+			t.Fatal(err)
+		}
+		s.Close()
+		s = st.Open()
+		defer s.Close()
+		got, err := s.Turn(ctx, "cancel")
+		if err != nil || got.Status != faden.Cancelled || !got.Status.Final() {
+			t.Fatalf("turn = %+v, %v", got, err)
+		}
+		left, err := s.Unfinished(ctx)
+		if err != nil || len(left) != 0 {
+			t.Fatalf("unfinished = %+v, %v", left, err)
+		}
+	})
 	turn := func(id, session string) faden.Turn {
 		return faden.Turn{RequestID: id, Session: session, Input: "in " + id, Backend: "a", Model: "m"}
 	}

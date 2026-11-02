@@ -24,7 +24,8 @@ type Runner struct {
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
 
-	mu      sync.Mutex      // guards active, changed and fatal
+	mu      sync.Mutex // guards active, turns, changed and fatal
+	turns   map[string]context.CancelFunc
 	active  map[string]bool // sessions with a worker
 	changed chan struct{}   // closed and replaced when a turn reaches a final status
 	fatal   error           // first store error a worker met
@@ -52,7 +53,15 @@ func (r *Runner) catchUp(a *Attempt, events []Event) error {
 				return err
 			}
 			name = turn.Backend
+			// A queued cancellation records an event without giving its
+			// backend any history. It cannot advance a handover boundary.
+			if turn.Attempts == 0 && turn.Status == Cancelled {
+				name = ""
+			}
 			backends[e.RequestID] = name
+		}
+		if name == "" {
+			continue
 		}
 		previous = name
 		if name == t.Backend {
@@ -156,6 +165,7 @@ func Open(store Store, backends map[string]Backend, options ...Options) (*Runner
 		ctx:      ctx,
 		cancel:   cancel,
 		active:   map[string]bool{},
+		turns:    map[string]context.CancelFunc{},
 		changed:  make(chan struct{}),
 	}
 	if len(options) > 0 {
@@ -217,7 +227,46 @@ func (r *Runner) Submit(ctx context.Context, s Submission) (Turn, error) {
 	return t, nil
 }
 
-// Wait returns the turn once it is done or failed.
+// Cancel permanently ends one turn. Final turns are returned unchanged.
+// The cancellation is stored before the backend is stopped.
+func (r *Runner) Cancel(ctx context.Context, requestID string) (Turn, error) {
+	r.mu.Lock()
+	t, err := r.store.Turn(ctx, requestID)
+	if err != nil {
+		r.mu.Unlock()
+		return Turn{}, fmt.Errorf("faden: cancel %s: %w", requestID, err)
+	}
+	if t.Status.Final() {
+		r.mu.Unlock()
+		return t, nil
+	}
+	_, err = r.store.AppendEvent(ctx, Event{Session: t.Session, RequestID: requestID, Kind: TurnEnded, Text: "cancelled"})
+	if err != nil {
+		r.mu.Unlock()
+		return Turn{}, fmt.Errorf("faden: cancel event %s: %w", requestID, err)
+	}
+	running := t.Status == Running
+	t.Status = Cancelled
+	if err := r.store.SaveTurn(ctx, t); err != nil {
+		r.mu.Unlock()
+		return Turn{}, fmt.Errorf("faden: cancel %s: %w", requestID, err)
+	}
+	r.broadcast()
+	if cancel := r.turns[requestID]; cancel != nil {
+		cancel()
+	}
+	r.mu.Unlock()
+	if running {
+		if b := r.backends[t.Backend]; b != nil {
+			if err := b.Stop(ctx, t); err != nil {
+				return t, fmt.Errorf("faden: stop cancelled turn %s: %w", requestID, err)
+			}
+		}
+	}
+	return t, nil
+}
+
+// Wait returns the turn once it reaches a final status.
 func (r *Runner) Wait(ctx context.Context, requestID string) (Turn, error) {
 	for {
 		r.mu.Lock()
@@ -317,13 +366,21 @@ func (r *Runner) broadcast() {
 }
 
 func (r *Runner) finish(t Turn, status Status, msg string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	stored, err := r.store.Turn(context.WithoutCancel(r.ctx), t.RequestID)
+	if err != nil {
+		return err
+	}
+	if stored.Status == Cancelled {
+		stored.Usage = t.Usage
+		return r.store.SaveTurn(context.WithoutCancel(r.ctx), stored)
+	}
 	t.Status, t.Error = status, msg
-	if err := r.store.SaveTurn(r.ctx, t); err != nil {
+	if err := r.store.SaveTurn(context.WithoutCancel(r.ctx), t); err != nil {
 		return fmt.Errorf("faden: finish turn %s: %w", t.RequestID, err)
 	}
-	r.mu.Lock()
 	r.broadcast()
-	r.mu.Unlock()
 	return nil
 }
 
@@ -345,12 +402,27 @@ func (r *Runner) recordInput(a *Attempt, events []Event) error {
 
 // run runs one turn. A running turn already has its attempt raised by Open.
 func (r *Runner) run(t Turn) error {
+	r.mu.Lock()
+	t, err := r.store.Turn(r.ctx, t.RequestID)
+	if err != nil {
+		r.mu.Unlock()
+		return err
+	}
+	if t.Status.Final() {
+		r.mu.Unlock()
+		return nil
+	}
+	ctx, cancel := context.WithCancel(r.ctx)
+	r.turns[t.RequestID] = cancel
+	defer func() { cancel(); r.mu.Lock(); delete(r.turns, t.RequestID); r.mu.Unlock() }()
 	if t.Status == Pending {
 		t.Status, t.Attempts = Running, 1
 		if err := r.store.SaveTurn(r.ctx, t); err != nil {
+			r.mu.Unlock()
 			return fmt.Errorf("faden: start turn %s: %w", t.RequestID, err)
 		}
 	}
+	r.mu.Unlock()
 	backend, ok := r.backends[t.Backend]
 	if !ok {
 		return r.finish(t, Failed, fmt.Sprintf("faden: no backend %q", t.Backend))
@@ -371,7 +443,7 @@ func (r *Runner) run(t Turn) error {
 	}
 	a := &Attempt{store: r.store, turn: t, cursor: session.Cursors[t.Backend], usage: append([]ModelUsage(nil), t.Usage...)}
 	if r.prepare != nil {
-		setup, err := r.prepare(r.ctx, t)
+		setup, err := r.prepare(ctx, t)
 		if err != nil {
 			if r.ctx.Err() != nil {
 				return nil // closed: the turn stays running for the next Open
@@ -395,11 +467,14 @@ func (r *Runner) run(t Turn) error {
 	if err := r.recordInput(a, events); err != nil {
 		return fmt.Errorf("faden: record input of turn %s: %w", t.RequestID, err)
 	}
-	runErr := backend.Run(r.ctx, send, a)
+	var runErr error
+	if ctx.Err() == nil {
+		runErr = backend.Run(ctx, send, a)
+	}
 	t.Usage = a.usage
 	if r.ctx.Err() != nil {
 		// Keep reported usage for the next attempt, while leaving the turn running.
-		return r.store.SaveTurn(context.WithoutCancel(r.ctx), t)
+		return r.finish(t, Running, "")
 	}
 	if runErr != nil {
 		var quota *QuotaError

@@ -14,6 +14,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nogo/faden"
@@ -33,7 +34,11 @@ type Config struct {
 }
 
 // Backend implements faden.Backend for Codex.
-type Backend struct{ cfg Config }
+type Backend struct {
+	cfg    Config
+	mu     sync.Mutex // guards active
+	active map[string]func()
+}
 
 // New validates the host's collaborators.
 func New(cfg Config) (*Backend, error) {
@@ -41,15 +46,21 @@ func New(cfg Config) (*Backend, error) {
 		return nil, errors.New("codex: runtime is required")
 	}
 	cfg.Args = append([]string(nil), cfg.Args...)
-	return &Backend{cfg: cfg}, nil
+	return &Backend{cfg: cfg, active: make(map[string]func())}, nil
 }
 
 // ContinuesWithoutPrompt reports false so the runner supplies stored events
 // that Codex's own transcript can lose when a turn is killed.
 func (*Backend) ContinuesWithoutPrompt() bool { return false }
 
-// Stop stops the app-server an earlier attempt of t left running.
+// Stop interrupts an active turn, then stops its app-server or any leftover.
 func (b *Backend) Stop(ctx context.Context, t faden.Turn) error {
+	b.mu.Lock()
+	stop := b.active[t.RequestID]
+	b.mu.Unlock()
+	if stop != nil {
+		stop()
+	}
 	return b.cfg.Runtime.Stop(ctx, t.RequestID)
 }
 
@@ -132,7 +143,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 	argv := append([]string{"codex", "app-server"}, b.cfg.Args...)
 	argv = append(argv, setup.Args...)
 
-	runCtx, cancel := context.WithCancel(ctx)
+	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancel()
 	// An *os.File lets the child read stdin directly, so no copying goroutine
 	// can keep Wait blocked after the child exits.
@@ -155,7 +166,11 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 		done <- outcome{res, err}
 	}()
 
+	var wire sync.Mutex // guards writes and the active protocol turn id
+	var turnID, threadID string
 	send := func(v map[string]any) error {
+		wire.Lock()
+		defer wire.Unlock()
 		data, _ := json.Marshal(v)
 		_, err := stdinW.Write(append(data, '\n'))
 		return err
@@ -163,6 +178,40 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 	request := func(id int, method string, params any) error {
 		return send(map[string]any{"id": id, "method": method, "params": params})
 	}
+	var once sync.Once
+	stop := func() {
+		once.Do(func() {
+			// Release a blocked prompt write before waiting for the wire lock.
+			stdinW.SetWriteDeadline(time.Now().Add(time.Second))
+			wire.Lock()
+			if turnID != "" {
+				data, _ := json.Marshal(map[string]any{"id": 4, "method": "turn/interrupt", "params": map[string]string{"threadId": threadID, "turnId": turnID}})
+				stdinW.SetWriteDeadline(time.Now().Add(time.Second))
+				stdinW.Write(append(data, '\n'))
+			}
+			wire.Unlock()
+			cancel()
+		})
+	}
+	b.mu.Lock()
+	b.active[t.RequestID] = stop
+	b.mu.Unlock()
+	watchDone := make(chan struct{})
+	defer func() {
+		cancel()
+		<-watchDone
+		b.mu.Lock()
+		delete(b.active, t.RequestID)
+		b.mu.Unlock()
+	}()
+	go func() {
+		defer close(watchDone)
+		select {
+		case <-ctx.Done():
+			stop()
+		case <-runCtx.Done():
+		}
+	}()
 	finish := func(ended bool, runErr error) error {
 		stdinW.Close()
 		var out outcome
@@ -214,6 +263,34 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 		if err := json.Unmarshal(scan.Bytes(), &m); err != nil {
 			runErr = err
 			break
+		}
+		if string(m.ID) == fmt.Sprint(idThread) {
+			var p struct {
+				Thread struct {
+					ID string `json:"id"`
+				} `json:"thread"`
+			}
+			if json.Unmarshal(m.Result, &p) == nil {
+				wire.Lock()
+				threadID = p.Thread.ID
+				wire.Unlock()
+			}
+		}
+		if m.Method == "turn/started" || string(m.ID) == fmt.Sprint(idTurn) {
+			var p struct {
+				Turn struct {
+					ID string `json:"id"`
+				} `json:"turn"`
+			}
+			raw := m.Params
+			if m.Method == "" {
+				raw = m.Result
+			}
+			if json.Unmarshal(raw, &p) == nil && p.Turn.ID != "" {
+				wire.Lock()
+				turnID = p.Turn.ID
+				wire.Unlock()
+			}
 		}
 		switch {
 		case m.Method != "" && len(m.ID) > 0:

@@ -16,16 +16,17 @@ var ErrNotFound = errors.New("faden: not found")
 // Status is where a turn stands.
 type Status string
 
-// The statuses of a turn. Done and failed are final.
+// The statuses of a turn. Done, failed and cancelled are final.
 const (
-	Pending Status = "pending"
-	Running Status = "running"
-	Done    Status = "done"
-	Failed  Status = "failed"
+	Pending   Status = "pending"
+	Running   Status = "running"
+	Done      Status = "done"
+	Failed    Status = "failed"
+	Cancelled Status = "cancelled"
 )
 
 // Final reports whether the turn will not run again.
-func (s Status) Final() bool { return s == Done || s == Failed }
+func (s Status) Final() bool { return s == Done || s == Failed || s == Cancelled }
 
 // Kind says what one event is.
 type Kind string
@@ -135,8 +136,8 @@ type Backend interface {
 	// ContinuesWithoutPrompt reports whether the backend can continue an
 	// interrupted turn with no input. If not, the runner sends a prompt.
 	ContinuesWithoutPrompt() bool
-	// Stop stops whatever an earlier attempt of t left running, such as a
-	// CLI whose host died. The runner calls it before an attempt above one.
+	// Stop stops t's work, including a CLI whose host died. The runner calls
+	// it on cancellation, before continuation and when giving up a turn.
 	Stop(ctx context.Context, t Turn) error
 	// Run runs the turn. t.Input is what to send; it is empty when the
 	// backend continues without a prompt. Run emits each completed item

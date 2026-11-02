@@ -1,8 +1,10 @@
 package codex
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -414,5 +416,85 @@ func TestPrepareSetupReachesAppServerAndBothThreadRequests(t *testing.T) {
 				t.Errorf("%s request %q lacks %s", method, line, need)
 			}
 		}
+	}
+}
+
+// interruptRuntime answers the handshake and records whether interruption precedes exit.
+type interruptRuntime struct {
+	ready       chan struct{}
+	interrupted chan struct{}
+}
+
+func (r *interruptRuntime) Stop(context.Context, string) error { return nil }
+func (r *interruptRuntime) Run(ctx context.Context, cmd faden.Command) (faden.Result, error) {
+	scan := bufio.NewScanner(cmd.Stdin)
+	for scan.Scan() {
+		var m message
+		if err := json.Unmarshal(scan.Bytes(), &m); err != nil {
+			return faden.Result{}, err
+		}
+		switch m.Method {
+		case "initialize":
+			fmt.Fprintln(cmd.Stdout, `{"id":1,"result":{}}`)
+		case "thread/start":
+			fmt.Fprintln(cmd.Stdout, `{"id":2,"result":{"thread":{"id":"thread-cancel"}}}`)
+		case "turn/start":
+			fmt.Fprintln(cmd.Stdout, `{"id":3,"result":{"turn":{"id":"turn-cancel"}}}`)
+			fmt.Fprintln(cmd.Stdout, `{"id":"ready","method":"item/commandExecution/requestApproval","params":{}}`)
+		case "turn/interrupt":
+			var p struct {
+				ThreadID string `json:"threadId"`
+				TurnID   string `json:"turnId"`
+			}
+			if err := json.Unmarshal(m.Params, &p); err != nil || p.ThreadID != "thread-cancel" || p.TurnID != "turn-cancel" {
+				return faden.Result{}, fmt.Errorf("bad interrupt: %s", m.Params)
+			}
+			close(r.interrupted)
+			<-ctx.Done()
+			return faden.Result{}, ctx.Err()
+		default:
+			if string(m.ID) == `"ready"` {
+				close(r.ready)
+			}
+		}
+	}
+	return faden.Result{}, scan.Err()
+}
+
+func TestCancelInterruptsBeforeRuntimeEnds(t *testing.T) {
+	runtime := &interruptRuntime{ready: make(chan struct{}), interrupted: make(chan struct{})}
+	b, err := New(Config{Runtime: runtime})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := jsonl.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	turn := faden.Turn{Session: "s", RequestID: "cancel", Input: "wait"}
+	a := newAttempt(t, store, turn)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- b.Run(ctx, turn, a) }()
+	select {
+	case <-runtime.ready:
+	case <-t.Context().Done():
+		t.Fatal(t.Context().Err())
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("cancel returned nil")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancel did not stop runtime")
+	}
+	select {
+	case <-runtime.interrupted:
+	default:
+		t.Fatal("runtime ended without turn/interrupt")
 	}
 }

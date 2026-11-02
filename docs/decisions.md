@@ -11,7 +11,8 @@
 ### Model
 
 - ~~**A session is a thread.** It records its current backend and one resume cursor per backend it has used.~~ *Changed 2026-11-02: a session records one resume cursor per backend; nothing read its current backend. See "Decided 2026-11-02 — the attempt".*
-- **A turn** carries a session, a `requestId`, the input text, the backend and model, a status (`pending`, `running`, `done`, `failed`) and an attempt count. A session runs one turn at a time; later turns wait as `pending`, oldest first.
+- ~~**A turn** carries a session, a `requestId`, the input text, the backend and model, a status (`pending`, `running`, `done`, `failed`) and an attempt count. A session runs one turn at a time; later turns wait as `pending`, oldest first.~~ *Changed 2026-11-02: cancellation must end a turn permanently, including after restart.*
+- **A turn** carries a session, a `requestId`, the input text, the backend and model, a status (`pending`, `running`, `done`, `failed`, `cancelled`) and an attempt count. Done, failed and cancelled are final. A session runs one turn at a time; later turns wait as `pending`, oldest first.
 - **`requestId` is unique per store.** Submitting a known `requestId` returns the existing turn and runs nothing.
 - **An event is one completed item** of a turn: user message, assistant message, tool call, tool result, error, handover, turn started, turn ended. ~~It keeps the backend's native payload beside the normalized fields (text, tool name, action, input, output), as sidenote's `harness.Event` does.~~ *Changed 2026-11-02: only llama.cpp keeps a native payload; Claude Code and Codex events carry the normalized fields (text, tool name, action, input, output). See "Decided 2026-11-02 — memory".* Streaming fragments are not stored.
 - **A resume cursor is opaque JSON owned by its backend.** faden stores it and hands it back; only the backend reads it (as t3code does).
@@ -242,3 +243,9 @@ Rejected: usage on each event, which grows with tool activity; keeping native CL
 - **llama:** a 429 after the retries is quota. `RetryAt` is the time of the last answer plus its `Retry-After`, and zero when none was sent. A refused connection after the retries is unavailable.
 
 Rejected: the runner waits for the reset and retries itself.
+
+## Decided 2026-11-02 — cancel one turn (#28)
+
+**`Runner.Cancel(ctx, requestID)` stores a final `Cancelled` status before stopping the backend.** Pending turns never start; running turns receive context cancellation and `Backend.Stop`. Done, failed and cancelled turns return unchanged. The session worker waits for the attempt to return before starting the next turn. A stored cancellation wins over completion and restart.
+
+**The thread records cancellation as `TurnEnded` with text `cancelled`.** This uses the existing event that handover and `read_thread` already expose. Codex sends `turn/interrupt` with its thread and turn IDs before cancelling the runtime context. Claude and llama use context cancellation and the runtime; Claude's control protocol stays out of scope.
