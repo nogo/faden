@@ -21,7 +21,7 @@
 - **On open, every `running` turn continues.** Its attempt count goes up in the store before anything is sent, so a crash during the continuation still recovers on the next open (t3code writes "starting" for the same reason). After 3 attempts the turn fails with a message that says to send a new one.
 - **A backend declares whether it continues without a prompt.** llama.cpp does (faden owns its transcript); Claude Code gets "Continue where you left off." (t3code's text).
 - ~~**A CLI left running by a dead host is stopped before the turn continues.** Otherwise two agents write to one workspace. A local process dies with its parent (Linux `Pdeathsig`, process group); a process inside a container is found by a pid file the start command writes and killed by the next owner.~~ *Superseded 2026-11-01: the parent-death signal does not stop grandchildren.*
-- **Local leftovers are found in `Local.PIDDir/process.pid`.** The host supplies an existing, durably created directory for one sequential command owner and reuses it after restart. Before every command, Local kills the recorded process group, ignoring a group that no longer exists. A shell waits on a pipe while Local writes the new group id, syncs the file and syncs its directory; only then does Local release the command. Local kills remaining group members and removes the record on completion. `Pdeathsig` is supplementary: it targets the direct child and depends on the starting OS thread. Container leftovers still use the container pid file.
+- ~~**Local leftovers are found in `Local.PIDDir/process.pid`.** The host supplies an existing, durably created directory for one sequential command owner and reuses it after restart. Before every command, Local kills the recorded process group, ignoring a group that no longer exists. A shell waits on a pipe while Local writes the new group id, syncs the file and syncs its directory; only then does Local release the command. Local kills remaining group members and removes the record on completion. `Pdeathsig` is supplementary: it targets the direct child and depends on the starting OS thread. Container leftovers still use the container pid file.~~ *Changed 2026-11-02: see "Decided 2026-11-01 — commands keyed by turn" (#17).*
 
 ### Backends
 
@@ -72,7 +72,7 @@ Consequence: faden's stored events are the only record of a killed Claude turn. 
 
 ## Decided 2026-11-01 — Claude runtime streaming
 
-Claude consumes stdin and emits completed items while it runs. Its backend requires `RunStream`; `Local` implements it beside the existing buffered `Run`. Stderr stays separate from the JSON stream. The host supplies the environment through `Local.Env`. The backend checkpoints its UUID through the host's store before launch, and checkpoints the last assistant id during the stream. A custom backend name must match its key in the runner.
+Claude consumes stdin and emits completed items while it runs. ~~Its backend requires `RunStream`; `Local` implements it beside the existing buffered `Run`.~~ *Changed 2026-11-02: see "Decided 2026-11-01 — commands keyed by turn" (#17).* Stderr stays separate from the JSON stream. The host supplies the environment through `Local.Env`. The backend checkpoints its UUID through the host's store before launch, and checkpoints the last assistant id during the stream. A custom backend name must match its key in the runner.
 
 ## Decided 2026-11-01 — handover replay
 
@@ -82,11 +82,11 @@ llama.cpp rebuilds its native messages and inserts portable messages at incoming
 
 ## Decided 2026-11-01 — thread reading over MCP
 
-`mcp.Server` listens on a loopback port and serves `read_thread` as JSON-RPC over HTTP POST (`initialize`, `ping`, `tools/list`, `tools/call`). Each session has its own token, granted per turn and revoked when the turn ends. A wrong token gets 401; a `session` argument other than the token's session is a tool error. `claude.Config.Threads` makes the backend write a temporary `--mcp-config` file whose `Authorization` header is `Bearer ${FADEN_MCP_TOKEN}`. The token reaches Claude only through its environment, so this needs `faden.Local` (`Local.WithEnv`). Container runs stay open, as above.
+`mcp.Server` listens on a loopback port and serves `read_thread` as JSON-RPC over HTTP POST (`initialize`, `ping`, `tools/list`, `tools/call`). Each session has its own token, granted per turn and revoked when the turn ends. A wrong token gets 401; a `session` argument other than the token's session is a tool error. `claude.Config.Threads` makes the backend write a temporary `--mcp-config` file whose `Authorization` header is `Bearer ${FADEN_MCP_TOKEN}`. The token reaches Claude only through its environment, ~~so this needs `faden.Local` (`Local.WithEnv`)~~; since #17 it travels in `Command.Env`. Container runs stay open, as above.
 
 ## Decided 2026-11-02 — Codex
 
-Package `codex` runs `codex app-server` through a runtime with `RunStream` and speaks JSON-RPC over stdio: `initialize`, `initialized`, then `thread/start` (new session) or `thread/resume` with the stored thread id, then `turn/start`. The cursor is `{"thread_id": ...}`. It is stored as soon as `thread/start` answers, before `turn/start` is sent.
+Package `codex` runs `codex app-server` through a runtime ~~with `RunStream`~~ and speaks JSON-RPC over stdio: `initialize`, `initialized`, then `thread/start` (new session) or `thread/resume` with the stored thread id, then `turn/start`. The cursor is `{"thread_id": ...}`. It is stored as soon as `thread/start` answers, before `turn/start` is sent.
 
 Completed items become events, each with the notification as its native payload: `agentMessage` is assistant text; `commandExecution`, `fileChange` and `mcpToolCall` are a tool call (with its action) followed by a tool result; `turn/completed` is the end of the turn, and a status other than `completed` fails the turn. The backend does not store the user message.
 
