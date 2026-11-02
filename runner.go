@@ -402,6 +402,14 @@ func (r *Runner) run(t Turn) error {
 		return r.store.SaveTurn(context.WithoutCancel(r.ctx), t)
 	}
 	if runErr != nil {
+		var quota *QuotaError
+		var unavailable *UnavailableError
+		switch {
+		case errors.As(runErr, &quota):
+			t.Failure, t.RetryAt, t.LimitType = FailureQuota, quota.ResetsAt, quota.LimitType
+		case errors.As(runErr, &unavailable):
+			t.Failure = FailureUnavailable
+		}
 		return r.finish(t, Failed, runErr.Error())
 	}
 	return r.finish(t, Done, "")

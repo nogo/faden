@@ -2,6 +2,7 @@ package claude
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"testing"
@@ -75,4 +76,50 @@ func TestLiveUsage(t *testing.T) {
 		}
 	}
 	t.Logf("usage=%+v", turn.Usage)
+}
+
+func parseAll(t *testing.T, lines ...string) error {
+	t.Helper()
+	var c cursor
+	var err error
+	for _, line := range lines {
+		if _, err = parseLine([]byte(line), &c, func(faden.Event) error { return nil }, func(faden.ModelUsage) {}, ""); err != nil {
+			break
+		}
+	}
+	return err
+}
+
+func TestFailureKinds(t *testing.T) {
+	var quota *faden.QuotaError
+	err := parseAll(t, `{"type":"result","is_error":true,"error":"rate_limit","result":"limit","quotaLimits":{"status":"rejected","resetsAt":1800000000,"rateLimitType":"five_hour"}}`)
+	if !errors.As(err, &quota) || !quota.ResetsAt.Equal(time.Unix(1800000000, 0)) || quota.LimitType != "five_hour" {
+		t.Fatalf("rejected limits: %v", err)
+	}
+	// stream-json puts the error on the assistant line before the result.
+	err = parseAll(t,
+		`{"type":"assistant","error":"rate_limit","message":{"id":"m1","content":[{"type":"text","text":"limit"}]}}`,
+		`{"type":"result","is_error":true,"result":"limit"}`)
+	if !errors.As(err, &quota) || !quota.ResetsAt.IsZero() {
+		t.Fatalf("rate_limit without reset: %v", err)
+	}
+	err = parseAll(t, `{"type":"result","is_error":true,"quotaLimits":{"status":"allowed_warning"},"result":"x"}`)
+	if errors.As(err, &quota) {
+		t.Fatalf("a warning is not a quota stop: %v", err)
+	}
+	var unavailable *faden.UnavailableError
+	err = parseAll(t,
+		`{"type":"assistant","error":"authentication_failed","message":{"id":"m1","content":[{"type":"text","text":"Not logged in · Please run /login"}]}}`,
+		`{"type":"result","is_error":true,"result":"Not logged in · Please run /login"}`)
+	if !errors.As(err, &unavailable) {
+		t.Fatalf("not logged in: %v", err)
+	}
+	err = parseAll(t, `{"type":"result","is_error":true,"result":"Not logged in · Please run /login"}`)
+	if !errors.As(err, &unavailable) {
+		t.Fatalf("not logged in, result only: %v", err)
+	}
+	err = parseAll(t, `{"type":"result","is_error":true,"result":"boom"}`)
+	if errors.As(err, &quota) || errors.As(err, &unavailable) || err == nil {
+		t.Fatalf("plain failure: %v", err)
+	}
 }

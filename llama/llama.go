@@ -20,6 +20,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/nogo/faden"
@@ -406,7 +407,7 @@ func (b *Backend) complete(ctx context.Context, model string, tools map[string]T
 		}
 		m, retry, delay, err := b.call(ctx, body)
 		if err == nil || !retry || attempt == 3 {
-			return m, err
+			return m, finalError(err, delay)
 		}
 		delay = max(delay, time.Second<<attempt)
 		timer := time.NewTimer(delay)
@@ -431,6 +432,9 @@ func (b *Backend) call(ctx context.Context, body []byte) (completion, bool, time
 	}
 	resp, err := b.cfg.Client.Do(req)
 	if err != nil {
+		if errors.Is(err, syscall.ECONNREFUSED) {
+			return completion{}, true, 0, fmt.Errorf("llama: call model: %w", &faden.UnavailableError{Reason: "connection refused"})
+		}
 		return completion{}, true, 0, fmt.Errorf("llama: call model: %w", err)
 	}
 	defer resp.Body.Close()
@@ -441,7 +445,7 @@ func (b *Backend) call(ctx context.Context, body []byte) (completion, bool, time
 		return completion{}, retry || resp.StatusCode == http.StatusOK, delay, fmt.Errorf("llama: read answer: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return completion{}, retry, delay, fmt.Errorf("llama: model answered %d", resp.StatusCode)
+		return completion{}, retry, delay, &httpError{status: resp.StatusCode}
 	}
 	var parsed struct {
 		Usage struct {
@@ -460,6 +464,25 @@ func (b *Backend) call(ctx context.Context, body []byte) (completion, bool, time
 	u := faden.ModelUsage{Model: parsed.Model, InputTokens: parsed.Usage.Prompt, OutputTokens: parsed.Usage.Completion}
 	m.Role = "assistant"
 	return completion{message: m, usage: u}, false, 0, nil
+}
+
+// httpError is a model answer that was not 200. Its text omits the body, which can echo credentials.
+type httpError struct{ status int }
+
+func (e *httpError) Error() string { return fmt.Sprintf("llama: model answered %d", e.status) }
+
+// finalError names a failure that survived the retries. A 429 is a quota stop,
+// with the reset taken from Retry-After when the endpoint sent it.
+func finalError(err error, delay time.Duration) error {
+	var h *httpError
+	if errors.As(err, &h) && h.status == http.StatusTooManyRequests {
+		q := &faden.QuotaError{}
+		if delay > 0 {
+			q.ResetsAt = time.Now().Add(delay).UTC()
+		}
+		return fmt.Errorf("%w: %w", err, q)
+	}
+	return err
 }
 
 func retryAfter(value string, now time.Time) time.Duration {

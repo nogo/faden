@@ -57,6 +57,44 @@ type cursor struct {
 	ThreadID string `json:"thread_id"`
 }
 
+// limitState holds the primary rate limit from the last notification that
+// carried one. Both fields are zero until then.
+type limitState struct {
+	resetsAt  time.Time
+	limitType string
+}
+
+// note reads a rate-limit snapshot from m. The wire name is not verified for
+// app-server, so it accepts the snake_case of codex exec --json and camelCase.
+// Reset times are Unix seconds.
+func (l *limitState) note(m message) {
+	var p struct {
+		Snake struct {
+			Primary *struct {
+				ResetsAt int64 `json:"resets_at"`
+			} `json:"primary"`
+		} `json:"rate_limits"`
+		Camel struct {
+			Primary *struct {
+				ResetsAt int64 `json:"resetsAt"`
+			} `json:"primary"`
+		} `json:"rateLimits"`
+	}
+	if json.Unmarshal(m.Params, &p) != nil {
+		return
+	}
+	var at int64
+	switch {
+	case p.Snake.Primary != nil:
+		at = p.Snake.Primary.ResetsAt
+	case p.Camel.Primary != nil:
+		at = p.Camel.Primary.ResetsAt
+	}
+	if at > 0 {
+		l.resetsAt, l.limitType = time.Unix(at, 0).UTC(), "primary"
+	}
+}
+
 // Request ids by step. The conversation is strictly sequential.
 const (
 	idInitialize = 1
@@ -169,6 +207,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 			a.AddUsage(usage)
 		}
 	}()
+	limits := &limitState{}
 	var runErr error
 	for runErr == nil && !ended && scan.Scan() {
 		var m message
@@ -191,7 +230,8 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 					usage = subtractUsage(total, *base)
 				}
 			} else {
-				ended, runErr = notification(m, emit)
+				limits.note(m)
+				ended, runErr = notification(m, emit, limits)
 			}
 		case m.Error != nil:
 			runErr = fmt.Errorf("request %s failed: %s", m.ID, m.Error.Message)
@@ -319,7 +359,7 @@ type item struct {
 
 // notification stores a completed item or the turn's end. Other
 // notifications, such as streaming deltas, are dropped.
-func notification(m message, emit func(faden.Event) error) (bool, error) {
+func notification(m message, emit func(faden.Event) error, limits *limitState) (bool, error) {
 	switch m.Method {
 	case "item/completed":
 		var p struct {
@@ -334,7 +374,8 @@ func notification(m message, emit func(faden.Event) error) (bool, error) {
 			Turn struct {
 				Status string `json:"status"`
 				Error  *struct {
-					Message string `json:"message"`
+					Message        string          `json:"message"`
+					CodexErrorInfo json.RawMessage `json:"codexErrorInfo"`
 				} `json:"error"`
 			} `json:"turn"`
 		}
@@ -348,6 +389,9 @@ func notification(m message, emit func(faden.Event) error) (bool, error) {
 			msg := "turn " + p.Turn.Status
 			if p.Turn.Error != nil {
 				msg += ": " + p.Turn.Error.Message
+				if string(p.Turn.Error.CodexErrorInfo) == `"usageLimitExceeded"` {
+					return true, fmt.Errorf("codex: %s: %w", msg, &faden.QuotaError{ResetsAt: limits.resetsAt, LimitType: limits.limitType})
+				}
 			}
 			return true, errors.New(msg)
 		}

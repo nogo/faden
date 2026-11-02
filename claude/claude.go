@@ -16,6 +16,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/nogo/faden"
 	"github.com/nogo/faden/handover"
@@ -66,6 +67,17 @@ func (b *Backend) Stop(ctx context.Context, t faden.Turn) error {
 type cursor struct {
 	SessionID       string `json:"session_id"`
 	LastAssistantID string `json:"last_assistant_id,omitempty"`
+
+	// Read from the stream, never stored: the reason Claude gave on an error
+	// message, and the quota limits it reported.
+	apiError string
+	limits   *quotaLimits
+}
+
+type quotaLimits struct {
+	Status        string  `json:"status"`
+	ResetsAt      float64 `json:"resetsAt"`
+	RateLimitType string  `json:"rateLimitType"`
 }
 
 // Run saves the session UUID before launching Claude, then stores completed
@@ -204,17 +216,25 @@ func parseLine(line []byte, c *cursor, emit func(faden.Event) error, add func(fa
 			Write  int64   `json:"cacheCreationInputTokens"`
 			Cost   float64 `json:"costUSD"`
 		} `json:"modelUsage"`
-		TotalCost float64 `json:"total_cost_usd"`
-		Type      string  `json:"type"`
-		IsError   bool    `json:"is_error"`
-		Result    string  `json:"result"`
-		Message   struct {
+		TotalCost   float64      `json:"total_cost_usd"`
+		Error       string       `json:"error"`
+		QuotaLimits *quotaLimits `json:"quotaLimits"`
+		Type        string       `json:"type"`
+		IsError     bool         `json:"is_error"`
+		Result      string       `json:"result"`
+		Message     struct {
 			ID      string  `json:"id"`
 			Content []block `json:"content"`
 		} `json:"message"`
 	}
 	if err := json.Unmarshal(line, &msg); err != nil {
 		return false, err
+	}
+	if msg.Error != "" {
+		c.apiError = msg.Error
+	}
+	if msg.QuotaLimits != nil {
+		c.limits = msg.QuotaLimits
 	}
 	if msg.Type == "result" {
 		models := make([]string, 0, len(msg.ModelUsage))
@@ -233,7 +253,7 @@ func parseLine(line []byte, c *cursor, emit func(faden.Event) error, add func(fa
 			return false, err
 		}
 		if msg.IsError {
-			return true, errors.New("Claude reported an unsuccessful turn")
+			return true, c.failure(msg.Result)
 		}
 		return true, nil
 	}
@@ -288,4 +308,24 @@ func parseLine(line []byte, c *cursor, emit func(faden.Event) error, add func(fa
 		}
 	}
 	return false, nil
+}
+
+// failure names why an unsuccessful turn failed. Claude reports a quota stop
+// as error "rate_limit" or as rejected quota limits, and a missing login as
+// error "authentication_failed" or a "Not logged in" result.
+func (c *cursor) failure(result string) error {
+	if c.apiError == "rate_limit" || c.limits != nil && c.limits.Status == "rejected" {
+		q := &faden.QuotaError{}
+		if c.limits != nil {
+			q.LimitType = c.limits.RateLimitType
+			if c.limits.ResetsAt > 0 {
+				q.ResetsAt = time.Unix(int64(c.limits.ResetsAt), 0).UTC()
+			}
+		}
+		return q
+	}
+	if c.apiError == "authentication_failed" || strings.HasPrefix(result, "Not logged in") {
+		return &faden.UnavailableError{Reason: result}
+	}
+	return errors.New("Claude reported an unsuccessful turn")
 }

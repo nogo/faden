@@ -230,3 +230,15 @@ Rejected: reading and writing files from Go, which touches the host's disk inste
 **Codex uses `thread/tokenUsage/updated`.** The installed CLI's generated schema defines `tokenUsage.total` and `tokenUsage.last` with camel-case token fields. Faden subtracts the total before the first reported call from later totals. This excludes previous turns and avoids counting repeated snapshots. The thread response supplies the model, falling back to the turn's requested model.
 
 Rejected: usage on each event, which grows with tool activity; keeping native CLI lines, which duplicates their other payloads.
+
+## Decided 2026-11-02 — failure kinds (#27)
+
+**`Turn.Failure` says why a turn failed: `""` (agent or other), `"quota"` or `"unavailable"`.** `Turn.RetryAt` and `Turn.LimitType` hold the reset time and limit name of a quota stop, when the backend knew them. A backend returns `*faden.QuotaError` or `*faden.UnavailableError`, wrapped or not. The runner finds it with `errors.As` and stores the kind with the failed turn. `Turn.Error` keeps the text.
+
+**The host decides when to send a new turn.** The runner never waits for a reset. The host owns the schedule, and forge already has its breaker.
+
+- **Claude:** a result with `error: "rate_limit"`, or `quotaLimits.status: "rejected"`, is quota. `resetsAt` (Unix seconds) and `rateLimitType` fill `RetryAt` and `LimitType`. `error: "authentication_failed"` or a "Not logged in" result is unavailable. Checked live with `--output-format stream-json`: the logged-out CLI puts `error` on the assistant line before the result, so the backend keeps it until the result arrives. The quota shapes come from forge's parser and are tested with invented lines. They were not triggered live.
+- **Codex:** a failed turn with `codexErrorInfo: "usageLimitExceeded"` is quota. The reset is `primary.resets_at` (`codex exec --json`) or `primary.resetsAt` (camel case), read from the last notification that carries a rate-limit snapshot. The `app-server` names of both are unverified, because `codex` is not installed here. Codex has no unavailable kind yet.
+- **llama:** a 429 after the retries is quota. `RetryAt` is the time of the last answer plus its `Retry-After`, and zero when none was sent. A refused connection after the retries is unavailable.
+
+Rejected: the runner waits for the reset and retries itself.

@@ -260,6 +260,7 @@ func (s *Store) SubmitTurn(_ context.Context, t faden.Turn) (faden.Turn, error) 
 		return faden.Turn{}, errors.New("jsonl: submit: request id and session are required")
 	}
 	t.Status, t.Attempts, t.Error = faden.Pending, 0, ""
+	t.Failure, t.RetryAt, t.LimitType = "", time.Time{}, ""
 	t.Created = time.Now().UTC()
 	t.Usage = slices.Clone(t.Usage)
 	sess, ok := s.sessions[t.Session]
@@ -292,6 +293,7 @@ func (s *Store) SaveTurn(_ context.Context, t faden.Turn) error {
 		return fmt.Errorf("jsonl: save turn %s: %w", t.RequestID, faden.ErrNotFound)
 	}
 	known.Status, known.Attempts, known.Error = t.Status, t.Attempts, t.Error
+	known.Failure, known.RetryAt, known.LimitType = t.Failure, t.RetryAt, t.LimitType
 	known.Usage = slices.Clone(t.Usage)
 	return s.write(s.sessions[known.Session], record{Type: "turn", Turn: &known})
 }

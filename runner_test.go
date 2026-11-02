@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -483,5 +484,34 @@ func TestUsageSumsAcrossAttemptsAndFailure(t *testing.T) {
 	want := []faden.ModelUsage{{Model: "invented", InputTokens: 25, OutputTokens: 4, CacheReadTokens: 6, CacheWriteTokens: 2, CostUSD: 0.25}, {Model: "other", InputTokens: 2}}
 	if got.Status != faden.Failed || got.Attempts != 2 || !reflect.DeepEqual(got.Usage, want) {
 		t.Fatalf("turn=%+v want usage=%+v", got, want)
+	}
+}
+
+func TestFailureKindIsStoredWithTheTurn(t *testing.T) {
+	resets := time.Unix(1800000000, 0).UTC()
+	cases := map[string]struct {
+		err  error
+		want faden.Turn
+	}{
+		"quota":       {fmt.Errorf("wrapped: %w", &faden.QuotaError{ResetsAt: resets, LimitType: "five_hour"}), faden.Turn{Failure: faden.FailureQuota, RetryAt: resets, LimitType: "five_hour"}},
+		"unavailable": {&faden.UnavailableError{Reason: "not logged in"}, faden.Turn{Failure: faden.FailureUnavailable}},
+		"agent":       {errors.New("boom"), faden.Turn{}},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			store := openStore(t, t.TempDir())
+			b := &fake{run: func(context.Context, faden.Turn, *faden.Attempt) error { return c.err }}
+			r, _ := faden.Open(store, map[string]faden.Backend{"fake": b})
+			defer r.Close()
+			r.Submit(t.Context(), sub("s1", "r1", "x"))
+			got := wait(t, r, "r1")
+			if got.Status != faden.Failed || got.Failure != c.want.Failure || !got.RetryAt.Equal(c.want.RetryAt) || got.LimitType != c.want.LimitType {
+				t.Fatalf("turn = %+v", got)
+			}
+			stored, _ := store.Turn(t.Context(), "r1")
+			if stored.Failure != got.Failure || !stored.RetryAt.Equal(got.RetryAt) {
+				t.Fatalf("stored = %+v", stored)
+			}
+		})
 	}
 }

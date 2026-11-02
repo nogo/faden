@@ -53,14 +53,20 @@ type Session struct {
 // Turn is one user input and everything until the backend's final answer.
 // RequestID is unique per store.
 type Turn struct {
-	RequestID string       `json:"requestId"`
-	Session   string       `json:"session"`
-	Input     string       `json:"input"`
-	Backend   string       `json:"backend"`
-	Model     string       `json:"model,omitempty"`
-	Status    Status       `json:"status"`
-	Attempts  int          `json:"attempts"`
-	Error     string       `json:"error,omitempty"`
+	RequestID string `json:"requestId"`
+	Session   string `json:"session"`
+	Input     string `json:"input"`
+	Backend   string `json:"backend"`
+	Model     string `json:"model,omitempty"`
+	Status    Status `json:"status"`
+	Attempts  int    `json:"attempts"`
+	Error     string `json:"error,omitempty"`
+	// Failure says why a failed turn failed: "" for the agent or anything else,
+	// FailureQuota or FailureUnavailable. RetryAt and LimitType hold what the
+	// backend knew of a quota stop; they are zero when unknown.
+	Failure   FailureKind  `json:"failure,omitempty"`
+	RetryAt   time.Time    `json:"retryAt,omitempty"`
+	LimitType string       `json:"limitType,omitempty"`
 	Created   time.Time    `json:"created"`
 	Usage     []ModelUsage `json:"usage,omitempty"`
 }
@@ -105,7 +111,7 @@ type Store interface {
 	// if needed. If t.RequestID is known, it returns the existing turn and
 	// changes nothing.
 	SubmitTurn(ctx context.Context, t Turn) (Turn, error)
-	// SaveTurn replaces the status, attempts, error and usage of a stored turn.
+	// SaveTurn replaces the status, attempts, error, failure kind and usage of a stored turn.
 	SaveTurn(ctx context.Context, t Turn) error
 	// Turn returns the turn with this request id.
 	Turn(ctx context.Context, requestID string) (Turn, error)
@@ -137,3 +143,40 @@ type Backend interface {
 	// through a, and saves its resume cursor there as soon as it has one.
 	Run(ctx context.Context, t Turn, a *Attempt) error
 }
+
+// FailureKind tells a host why a turn failed, so it can wait instead of
+// blaming the agent.
+type FailureKind string
+
+// The kinds of failure beyond the agent's own. The host decides when to send
+// a new turn; the runner never waits.
+const (
+	FailureQuota       FailureKind = "quota"
+	FailureUnavailable FailureKind = "unavailable"
+)
+
+// QuotaError is what a backend returns when the provider refuses work until
+// a limit resets. A zero ResetsAt means the backend did not learn the time.
+type QuotaError struct {
+	ResetsAt  time.Time
+	LimitType string
+}
+
+func (e *QuotaError) Error() string {
+	msg := "faden: provider quota reached"
+	if e.LimitType != "" {
+		msg += " (" + e.LimitType + ")"
+	}
+	if !e.ResetsAt.IsZero() {
+		msg += ", resets at " + e.ResetsAt.UTC().Format(time.RFC3339)
+	}
+	return msg
+}
+
+// UnavailableError is what a backend returns when the agent never ran: it
+// is not logged in, or its endpoint refused the connection.
+type UnavailableError struct {
+	Reason string
+}
+
+func (e *UnavailableError) Error() string { return "faden: agent unavailable: " + e.Reason }
