@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -19,6 +20,7 @@ import (
 	"github.com/nogo/faden"
 	"github.com/nogo/faden/handover"
 	"github.com/nogo/faden/jsonl"
+	"github.com/nogo/faden/memstore"
 )
 
 // fake is a backend with a scripted Run.
@@ -759,5 +761,32 @@ func TestDrainPastDeadlineLeavesTurnRunningForNextOpen(t *testing.T) {
 	defer r2.Close()
 	if got := wait(t, r2, "slow"); got.Status != faden.Done || got.Attempts != 2 {
 		t.Fatalf("after reopen: %+v", got)
+	}
+}
+
+func TestRunnerRunsTurnsOnMemstore(t *testing.T) {
+	store := memstore.New()
+	b := &fake{run: func(ctx context.Context, turn faden.Turn, a *faden.Attempt) error {
+		a.Emit(ctx, faden.Event{Kind: faden.AssistantMessage, Text: "re: " + turn.Input})
+		return a.SaveCursor(ctx, json.RawMessage(`{"id":"c1"}`))
+	}}
+	r, err := faden.Open(store, map[string]faden.Backend{"fake": b})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	r.Submit(t.Context(), sub("s1", "r1", "first"))
+	r.Submit(t.Context(), sub("s1", "r2", "second"))
+	if got := wait(t, r, "r2"); got.Status != faden.Done {
+		t.Fatalf("turn = %+v", got)
+	}
+	var texts []string
+	events, _ := store.Events(t.Context(), "s1", 0)
+	for _, e := range events {
+		texts = append(texts, e.Text)
+	}
+	sess, _ := store.Session(t.Context(), "s1")
+	if want := []string{"first", "re: first", "second", "re: second"}; !slices.Equal(texts, want) || string(sess.Cursors["fake"]) != `{"id":"c1"}` {
+		t.Fatalf("events = %v, session = %+v", texts, sess)
 	}
 }

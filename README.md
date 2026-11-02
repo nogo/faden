@@ -39,7 +39,7 @@ What it costs you: the standard library only, a store (JSONL files or your SQLit
                           or container exec
                           |
                           v
-                   store: jsonl files or the host's SQLite (*sql.DB)
+                   store: jsonl files, the host's SQLite (*sql.DB) or memory
 ```
 
 - A **session** is a thread. It remembers one resume cursor per backend.
@@ -87,6 +87,7 @@ The new request is never shortened. Omitted ranges are named, and the agent can 
 | `faden` | `Runner`, `Store`, `Backend`, `Attempt`, `Runtime`, `Local` (run commands on the host) |
 | `jsonl` | A store of append-only files, one per session. One owner process (file lock). |
 | `sqlite` | A store in your own `*sql.DB`; you bring the driver. `WithTx` joins your transaction. |
+| `memstore` | A store in process memory, lost when the process ends. Use it for a short job (a session title, a one-off question, a test). It keeps every event until dropped, so a host that runs for months uses `jsonl` or `sqlite`. |
 | `claude` | Claude Code through `--print` stream-json. faden creates the session id. |
 | `codex` | Codex through `codex app-server`. |
 | `llama` | faden's own loop on an OpenAI-compatible server, with your Go functions as tools. |

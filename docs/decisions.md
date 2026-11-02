@@ -283,3 +283,13 @@ Rejected: buffering completed events, which either blocks the turn or loses dura
 ## Decided 2026-11-02 — context with a turn (#32)
 
 **`Submission.Context` is stored in `Turn.Context` and sent before the input on every attempt.** Context is host text for that turn, including a continuation after restart. It never enters user message events, handover selection or `read_thread`. Handover budgets count the input without context. Backends add context when sending, without storing another copy in events. Empty context keeps the existing behavior.
+
+## Decided 2026-11-02 — memstore, a store without durability (#35)
+
+**Package `memstore` is a `faden.Store` in process memory.** `memstore.New()` returns an empty one. The runner reads back what it writes: `Wait` polls the turn, `Unfinished` finds the next turn, and handover, continuation, `read_thread` and llama's message rebuild read the events. So the store keeps sessions, turns, events and cursors, and behaves like `jsonl` and `sqlite` while the process lives. A known `requestId` runs once and queued turns run in order.
+
+**Restart does nothing and there is no lock.** A new store is empty, so `Open` finds no turn to continue. One process owns its memory. `Close` keeps the data, so a reopen within one process passes `storetest`.
+
+**It holds every event of every session until the store is dropped.** It suits a runner that lives for one job. A host that runs for months uses `jsonl` or `sqlite`.
+
+Rejected: a store that drops events and keeps only turns and cursors. It works for Claude and Codex on one backend, but breaks llama, handover, continuation and `read_thread`.
