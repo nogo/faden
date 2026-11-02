@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/nogo/faden"
@@ -119,6 +120,24 @@ func Run(t *testing.T, newStorage func(t *testing.T) Storage) {
 		if len(got) != 1 || string(got[0].Native) != string(native) || string(got[0].Input) != string(input) ||
 			got[0].Tool != "bash" || got[0].Action != "run" || got[0].Output != "o" {
 			t.Fatalf("event = %+v", got)
+		}
+	})
+
+	t.Run("LargeEventSurvivesReopen", func(t *testing.T) {
+		st := newStorage(t)
+		s := st.Open()
+		s.SubmitTurn(ctx, turn("r1", "s1"))
+		large := strings.Repeat("o", 1<<20)
+		s.AppendEvent(ctx, faden.Event{Session: "s1", RequestID: "r1", Kind: faden.ToolResult, Output: large})
+		s.SetCursor(ctx, "s1", "a", json.RawMessage(`{"n":1}`))
+		s.AppendEvent(ctx, faden.Event{Session: "s1", RequestID: "r1", Kind: faden.AssistantMessage, Text: "after"})
+		s.Close()
+
+		s = st.Open()
+		defer s.Close()
+		events, err := s.Events(ctx, "s1", 0)
+		if err != nil || len(events) != 2 || events[0].Output != large || events[1].Text != "after" || events[1].Seq != 2 {
+			t.Fatalf("events after reopen: %d, %v", len(events), err)
 		}
 	})
 

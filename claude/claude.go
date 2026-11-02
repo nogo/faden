@@ -1,5 +1,7 @@
 // Package claude runs durable Claude Code turns through a host-supplied runtime.
 // The host supplies permissions, environment, and persistent Claude session files.
+// Events carry normalized fields only: Claude keeps its own session, and a
+// killed turn continues from these fields.
 package claude
 
 import (
@@ -134,11 +136,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, raw json.RawMessage, em
 		argv = append(argv, "--mcp-config", file.Name())
 		env = []string{mcp.TokenEnv + "=" + token}
 	}
-	prompt := t.Input
-	if len(t.CatchUp) > 0 {
-		prompt = handover.Block(handover.Select(t.CatchUp, t.Input, t.HandoverBudget)) + "\n" + t.Input
-	}
-	input, _ := json.Marshal(map[string]any{"type": "user", "message": map[string]string{"role": "user", "content": prompt}})
+	input, _ := json.Marshal(map[string]any{"type": "user", "message": map[string]string{"role": "user", "content": handover.Prompt(t)}})
 	input = append(input, '\n')
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -211,9 +209,8 @@ func parseLine(line []byte, c *cursor, emit func(faden.Event) error) (bool, erro
 	if err := json.Unmarshal(line, &msg); err != nil {
 		return false, err
 	}
-	native := append(json.RawMessage(nil), line...)
 	if msg.Type == "result" {
-		if err := emit(faden.Event{Kind: faden.TurnEnded, Text: msg.Result, Native: native}); err != nil {
+		if err := emit(faden.Event{Kind: faden.TurnEnded, Text: msg.Result}); err != nil {
 			return false, err
 		}
 		if msg.IsError {
@@ -228,7 +225,7 @@ func parseLine(line []byte, c *cursor, emit func(faden.Event) error) (bool, erro
 		c.LastAssistantID = msg.Message.ID
 	}
 	for _, v := range msg.Message.Content {
-		e := faden.Event{Native: native}
+		var e faden.Event
 		switch v.Type {
 		case "text":
 			if msg.Type != "assistant" {

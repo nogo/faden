@@ -74,8 +74,9 @@ func TestTurns(t *testing.T) {
 	var kinds []faden.Kind
 	for _, e := range events {
 		kinds = append(kinds, e.Kind)
-		if !json.Valid(e.Native) {
-			t.Fatalf("native: %q", e.Native)
+		// The CLI keeps its own session; faden stores normalized fields only.
+		if e.Native != nil {
+			t.Fatalf("native payload stored: %q", e.Native)
 		}
 	}
 	if !reflect.DeepEqual(kinds, want) || events[1].Action != "cat greeting.txt" || events[2].Output != "hello" {

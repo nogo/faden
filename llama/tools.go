@@ -5,17 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 
 	"github.com/nogo/faden"
+	"github.com/nogo/faden/handover"
 )
 
 const (
-	bashName       = "bash"
-	readThreadName = "read_thread"
-	maxToolOutput  = 32 << 10
-	maxThreadItems = 100
+	bashName      = "bash"
+	maxToolOutput = 32 << 10
 )
 
 // Tool is a function the model may call.
@@ -38,12 +38,7 @@ func (t Tool) schema() json.RawMessage {
 }
 
 func sortedTools(m map[string]Tool) []Tool {
-	out := make([]Tool, 0, len(m))
-	for _, t := range m {
-		out = append(out, t)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out
+	return slices.SortedFunc(maps.Values(m), func(a, b Tool) int { return strings.Compare(a.Name, b.Name) })
 }
 
 // toolset is the host's tools plus the built-in ones, bound to one session.
@@ -55,7 +50,7 @@ func (b *Backend) toolset(session, key string) map[string]Tool {
 	if b.cfg.Runtime != nil {
 		tools[bashName] = bashTool(b.cfg.Runtime, key)
 	}
-	tools[readThreadName] = readThreadTool(b.cfg.Store, session)
+	tools[handover.ThreadTool] = readThreadTool(b.cfg.Store, session)
 	return tools
 }
 
@@ -85,47 +80,15 @@ func bashTool(rt faden.Runtime, key string) Tool {
 	}
 }
 
-// readThreadTool returns the events of one session by sequence range. It
-// reads only, and refuses any session but its own.
+// readThreadTool is handover's read_thread, bound to one session.
 func readThreadTool(store Store, own string) Tool {
 	return Tool{
-		Name:        readThreadName,
-		Description: "Read events of this conversation by sequence number, from first to last inclusive.",
-		Parameters:  json.RawMessage(`{"type":"object","properties":{"from":{"type":"integer"},"to":{"type":"integer"}},"required":["from","to"]}`),
+		Name:        handover.ThreadTool,
+		Description: handover.ThreadToolDescription,
+		Parameters:  json.RawMessage(handover.ThreadToolSchema),
 		Safe:        true,
 		Run: func(ctx context.Context, args json.RawMessage) (string, error) {
-			var a struct {
-				Session string `json:"session"`
-				From    int64  `json:"from"`
-				To      int64  `json:"to"`
-			}
-			if err := json.Unmarshal(args, &a); err != nil {
-				return "", fmt.Errorf("bad arguments: %w", err)
-			}
-			if a.Session != "" && a.Session != own {
-				return "", errors.New("only this conversation can be read")
-			}
-			if a.From < 1 {
-				a.From = 1
-			}
-			events, err := store.Events(ctx, own, a.From-1)
-			if err != nil {
-				return "", err
-			}
-			var lines []string
-			for _, e := range events {
-				if e.Seq > a.To {
-					break
-				}
-				if len(lines) == maxThreadItems {
-					lines = append(lines, fmt.Sprintf("[cut: ask again from %d]", e.Seq))
-					break
-				}
-				e.Native, e.Session, e.RequestID = nil, "", ""
-				line, _ := json.Marshal(e)
-				lines = append(lines, string(line))
-			}
-			return strings.Join(lines, "\n"), nil
+			return handover.ReadThread(ctx, store, own, args)
 		},
 	}
 }

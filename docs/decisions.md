@@ -13,7 +13,7 @@
 - **A session is a thread.** It records its current backend and one resume cursor per backend it has used.
 - **A turn** carries a session, a `requestId`, the input text, the backend and model, a status (`pending`, `running`, `done`, `failed`) and an attempt count. A session runs one turn at a time; later turns wait as `pending`, oldest first.
 - **`requestId` is unique per store.** Submitting a known `requestId` returns the existing turn and runs nothing.
-- **An event is one completed item** of a turn: user message, assistant message, tool call, tool result, error, handover, turn started, turn ended. It keeps the backend's native payload beside the normalized fields (text, tool name, action, input, output), as sidenote's `harness.Event` does. Streaming fragments are not stored.
+- **An event is one completed item** of a turn: user message, assistant message, tool call, tool result, error, handover, turn started, turn ended. ~~It keeps the backend's native payload beside the normalized fields (text, tool name, action, input, output), as sidenote's `harness.Event` does.~~ *Changed 2026-11-02: only llama.cpp keeps a native payload; Claude Code and Codex events carry the normalized fields (text, tool name, action, input, output). See "Decided 2026-11-02 — memory".* Streaming fragments are not stored.
 - **A resume cursor is opaque JSON owned by its backend.** faden stores it and hands it back; only the backend reads it (as t3code does).
 
 ### Restart
@@ -89,7 +89,7 @@ llama.cpp rebuilds its native messages and inserts portable messages at incoming
 
 Package `codex` runs `codex app-server` through a runtime ~~with `RunStream`~~ and speaks JSON-RPC over stdio: `initialize`, `initialized`, then `thread/start` (new session) or `thread/resume` with the stored thread id, then `turn/start`. The cursor is `{"thread_id": ...}`. It is stored as soon as `thread/start` answers, before `turn/start` is sent.
 
-Completed items become events, each with the notification as its native payload: `agentMessage` is assistant text; `commandExecution`, `fileChange` and `mcpToolCall` are a tool call (with its action) followed by a tool result; `turn/completed` is the end of the turn, and a status other than `completed` fails the turn. The backend does not store the user message.
+Completed items become events, ~~each with the notification as its native payload~~ *(changed 2026-11-02: with normalized fields only, see "Decided 2026-11-02 — memory")*: `agentMessage` is assistant text; `commandExecution`, `fileChange` and `mcpToolCall` are a tool call (with its action) followed by a tool result; `turn/completed` is the end of the turn, and a status other than `completed` fails the turn. The backend does not store the user message.
 
 Codex continues without a prompt: after `thread/resume`, `turn/start` carries an empty `input` list. `ContinuesWithoutPrompt` is true, so the runner sends no continuation text. Approval requests from Codex are declined (`decline`; the legacy requests get `denied`); other server requests get a "not supported" error. The host's sandbox and approval settings pass as `Config.Args` to `codex app-server` (`-c sandbox_mode=...`). A handover puts the catch-up block before the request, as the Claude backend does. When the input is empty the catch-up is not added.
 
@@ -123,3 +123,13 @@ A continuation without a handover uses the host's `Options.Budget`. A continuati
 ## Measured 2026-11-02 — continuation with stored events
 
 **With the killed turn's stored events in the continuation, both CLIs know what they already did.** `FADEN_LIVE=1 go test -v ./claude ./codex -run TestLiveResumeAfterKill` (claude 2.1.316, codex-cli 0.166.0, through the runner and a `jsonl` store since #18) answered `FIRST_FILE_KNOWN` on both. Claude did not write `first.txt` again; Codex kept it and continued with the sleep. One run each. Before #14 both answered `FIRST_FILE_UNKNOWN`.
+
+## Decided 2026-11-02 — memory
+
+Memory is a requirement, not a tuning step. A host keeps faden running for months, and tool output is the bulk of a thread.
+
+- **Claude Code and Codex events carry no native payload.** Both CLIs keep their own session, and nothing in faden read their native lines. What faden must know lives in the normalized fields: the store still tracks every completed item, and a killed turn continues from those fields (#14). Only llama.cpp keeps a native payload, because it rebuilds its transcript from it. Measured on one invented Claude turn with a 21 KB tool output (`/tmp/fadenmeasure`): 69.7 KB stored before, of which 45.3 KB native. The lost parts are the CLI's envelope: ids, token usage, cost, and Claude's second copy of a tool's output. Rejected: one native line per item, which still doubled every tool output. Measured after the change: `FADEN_LIVE=1 go test -v ./claude ./codex -run TestLiveResumeAfterKill` answered `FIRST_FILE_KNOWN` on both CLIs, so the continuation needs no native payload. One run each.
+- **`jsonl` keeps events in the file, not in memory.** It holds one file offset per event and reads events when asked. Sessions, turns and cursors stay in memory. Open streams the file line by line. Measured on 2,000 events of 8 KB: 17.9 MB held after open before, 24 KB after.
+- **The runner reads a session's events once per turn,** not once for each of catch-up, continuation and the input check.
+- **A handover renders only the events it selects,** and copies at most what the 240-rune cut keeps. Measured on 500 tool outputs of 100 KB: 152 MB allocated per selection before, 66 KB after.
+- **`read_thread` has one owner, `handover.ReadThread`,** used by the llama tool and the MCP server.

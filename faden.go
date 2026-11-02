@@ -70,8 +70,9 @@ type Turn struct {
 }
 
 // Event is one completed item of a turn. Native keeps the backend's own
-// payload beside the normalized fields. Seq counts from 1 within a session
-// and is set by the store.
+// payload beside the normalized fields, for a backend that rebuilds its
+// transcript from it; a backend whose CLI keeps its own session leaves it
+// empty. Seq counts from 1 within a session and is set by the store.
 type Event struct {
 	Session   string          `json:"session"`
 	RequestID string          `json:"requestId"`

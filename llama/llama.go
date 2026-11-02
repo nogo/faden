@@ -67,7 +67,7 @@ func New(cfg Config) (*Backend, error) {
 		if t.Name == "" || t.Run == nil {
 			return nil, errors.New("llama: tool needs a name and a Run function")
 		}
-		if t.Name == bashName || t.Name == readThreadName {
+		if t.Name == bashName || t.Name == handover.ThreadTool {
 			return nil, fmt.Errorf("llama: tool name %q is built in", t.Name)
 		}
 	}

@@ -31,11 +31,8 @@ type Runner struct {
 }
 
 // catchUp derives the boundary from executed turns, not the queued session backend.
-func (r *Runner) catchUp(t *Turn, emit func(Event) error) error {
-	events, err := r.store.Events(r.ctx, t.Session, 0)
-	if err != nil {
-		return err
-	}
+// events are the session's events before the turn runs.
+func (r *Runner) catchUp(t *Turn, events []Event, emit func(Event) error) error {
 	var previous string
 	var after int64
 	var marker *Event
@@ -66,6 +63,7 @@ func (r *Runner) catchUp(t *Turn, emit func(Event) error) error {
 	}
 	boundary := HandoverBoundary{From: previous, To: t.Backend, After: after, Budget: r.budget}
 	if marker != nil {
+		var err error
 		if boundary, err = HandoverOf(*marker); err != nil {
 			return err
 		}
@@ -312,11 +310,7 @@ func (r *Runner) finish(t Turn, status Status, msg string) error {
 // It comes after any handover event, so a backend rebuilding its history
 // finds the handover before the request. It also marks which backend ran
 // the turn, which catchUp needs even when the backend emits nothing.
-func (r *Runner) recordInput(t Turn, emit func(Event) error) error {
-	events, err := r.store.Events(r.ctx, t.Session, 0)
-	if err != nil {
-		return err
-	}
+func (r *Runner) recordInput(t Turn, events []Event, emit func(Event) error) error {
 	for _, e := range events {
 		if e.RequestID == t.RequestID && e.Kind == UserMessage {
 			return nil
@@ -359,15 +353,19 @@ func (r *Runner) run(t Turn) error {
 		_, err := r.store.AppendEvent(r.ctx, e)
 		return err
 	}
-	if err := r.catchUp(&send, emit); err != nil {
+	// One read serves catch-up, continuation and the input check. catchUp can
+	// emit only this turn's handover marker, which neither later step reads.
+	events, err := r.store.Events(r.ctx, t.Session, 0)
+	if err != nil {
+		return fmt.Errorf("faden: turn %s: %w", t.RequestID, err)
+	}
+	if err := r.catchUp(&send, events, emit); err != nil {
 		return fmt.Errorf("faden: handover turn %s: %w", t.RequestID, err)
 	}
 	if t.Attempts > 1 && !backend.ContinuesWithoutPrompt() {
-		if err := r.addOwnEvents(&send); err != nil {
-			return fmt.Errorf("faden: continue turn %s: %w", t.RequestID, err)
-		}
+		r.addOwnEvents(&send, events)
 	}
-	if err := r.recordInput(t, emit); err != nil {
+	if err := r.recordInput(t, events, emit); err != nil {
 		return fmt.Errorf("faden: record input of turn %s: %w", t.RequestID, err)
 	}
 	cursor, runErr := backend.Run(r.ctx, send, session.Cursors[t.Backend], emit)
@@ -389,18 +387,13 @@ func (r *Runner) run(t Turn) error {
 // catch-up, so a backend that only sees a continuation prompt still learns
 // what the turn already did. A CLI's own session keeps little of a killed
 // turn. The turn's handover marker is left out: it is bookkeeping.
-func (r *Runner) addOwnEvents(t *Turn) error {
+func (r *Runner) addOwnEvents(t *Turn, events []Event) {
 	if t.HandoverBudget == 0 {
 		t.HandoverBudget = r.budget
-	}
-	events, err := r.store.Events(r.ctx, t.Session, 0)
-	if err != nil {
-		return err
 	}
 	for _, e := range events {
 		if e.RequestID == t.RequestID && e.Kind != Handover {
 			t.CatchUp = append(t.CatchUp, e)
 		}
 	}
-	return nil
 }

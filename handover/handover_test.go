@@ -1,6 +1,7 @@
 package handover_test
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -30,5 +31,21 @@ func TestSelection(t *testing.T) {
 	items = handover.Select(events[:2], "", 0)
 	if items[1].Text != events[1].Text {
 		t.Fatal("assistant text shortened")
+	}
+}
+
+func TestLongToolOutputIsCutWithoutCopyingIt(t *testing.T) {
+	events := []faden.Event{{Seq: 1, Kind: faden.ToolResult, Tool: "bash", Output: strings.Repeat("界", 100_000)}}
+	items := handover.Select(events, "", 0)
+	got := items[0].Text
+	if !utf8.ValidString(got) || utf8.RuneCountInString(got) != 240 || !strings.HasPrefix(got, "tool_result bash    界") || !strings.HasSuffix(got, "界...") {
+		t.Fatalf("item = %q", got)
+	}
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	handover.Select(events, "", 0)
+	runtime.ReadMemStats(&after)
+	if n := after.TotalAlloc - before.TotalAlloc; n > 16<<10 {
+		t.Fatalf("Select of one 300 KB output allocated %d bytes", n)
 	}
 }

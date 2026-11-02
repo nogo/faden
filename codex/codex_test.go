@@ -121,8 +121,9 @@ func TestTurnThenResumeWithoutPrompt(t *testing.T) {
 	var kinds []faden.Kind
 	for _, e := range events {
 		kinds = append(kinds, e.Kind)
-		if !json.Valid(e.Native) {
-			t.Fatalf("native: %q", e.Native)
+		// The CLI keeps its own session; faden stores normalized fields only.
+		if e.Native != nil {
+			t.Fatalf("native payload stored: %q", e.Native)
 		}
 	}
 	want := []faden.Kind{faden.AssistantMessage, faden.ToolCall, faden.ToolResult, faden.ToolCall, faden.ToolResult, faden.AssistantMessage, faden.TurnEnded}
@@ -176,7 +177,7 @@ func TestHandoverPutsCatchUpBeforeRequest(t *testing.T) {
 		}
 	}
 	text := turn.Params.Input[0].Text
-	want := handover.Block(handover.Select(catchUp, "new request", 0)) + "\nnew request"
+	want := handover.Prompt(faden.Turn{Input: "new request", CatchUp: catchUp})
 	if text != want || !strings.Contains(text, "earlier answer") || !strings.HasSuffix(text, "new request") {
 		t.Fatalf("prompt: %q", text)
 	}

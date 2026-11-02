@@ -23,16 +23,15 @@ import (
 	"sync"
 
 	"github.com/nogo/faden"
+	"github.com/nogo/faden/handover"
 )
 
 // TokenEnv is the environment variable that holds the token for Claude.
 const TokenEnv = "FADEN_MCP_TOKEN"
 
 const (
-	toolName       = "read_thread"
-	maxBody        = 1 << 20
-	maxThreadItems = 100
-	protocol       = "2025-03-26"
+	maxBody  = 1 << 20
+	protocol = "2025-03-26"
 )
 
 // Events is the part of a faden.Store the server reads.
@@ -162,9 +161,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		reply(w, req.ID, map[string]any{}, nil)
 	case "tools/list":
 		reply(w, req.ID, map[string]any{"tools": []any{map[string]any{
-			"name":        toolName,
-			"description": "Read events of this conversation by sequence number, from first to last inclusive.",
-			"inputSchema": json.RawMessage(`{"type":"object","properties":{"from":{"type":"integer"},"to":{"type":"integer"}},"required":["from","to"]}`),
+			"name":        handover.ThreadTool,
+			"description": handover.ThreadToolDescription,
+			"inputSchema": json.RawMessage(handover.ThreadToolSchema),
 			"annotations": map[string]any{"readOnlyHint": true},
 		}}}, nil)
 	case "tools/call":
@@ -200,42 +199,17 @@ func (s *Server) call(ctx context.Context, session string, params json.RawMessag
 
 func (s *Server) readThread(ctx context.Context, own string, params json.RawMessage) (string, error) {
 	var p struct {
-		Name      string `json:"name"`
-		Arguments struct {
-			Session string `json:"session"`
-			From    int64  `json:"from"`
-			To      int64  `json:"to"`
-		} `json:"arguments"`
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
 	}
 	if err := json.Unmarshal(params, &p); err != nil {
 		return "", fmt.Errorf("bad arguments: %w", err)
 	}
-	if p.Name != toolName {
+	if p.Name != handover.ThreadTool {
 		return "", errors.New("unknown tool " + p.Name)
 	}
-	a := p.Arguments
-	if a.Session != "" && a.Session != own {
-		return "", errors.New("only this conversation can be read")
+	if len(p.Arguments) == 0 {
+		p.Arguments = json.RawMessage("{}")
 	}
-	if a.From < 1 {
-		a.From = 1
-	}
-	events, err := s.events.Events(ctx, own, a.From-1)
-	if err != nil {
-		return "", err
-	}
-	var lines []string
-	for _, e := range events {
-		if e.Seq > a.To {
-			break
-		}
-		if len(lines) == maxThreadItems {
-			lines = append(lines, fmt.Sprintf("[cut: ask again from %d]", e.Seq))
-			break
-		}
-		e.Native, e.Session, e.RequestID = nil, "", ""
-		line, _ := json.Marshal(e)
-		lines = append(lines, string(line))
-	}
-	return strings.Join(lines, "\n"), nil
+	return handover.ReadThread(ctx, s.events, own, p.Arguments)
 }

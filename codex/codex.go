@@ -1,7 +1,8 @@
 // Package codex runs durable Codex turns through a host-supplied runtime.
 // It starts `codex app-server` and speaks its JSON-RPC over stdio.
 // The host supplies sandbox and approval flags, environment, and the
-// persistent Codex session files.
+// persistent Codex session files. Events carry normalized fields only: Codex
+// keeps its own session, and a killed turn continues from these fields.
 package codex
 
 import (
@@ -98,11 +99,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, raw json.RawMessage, em
 	}
 	items := []map[string]string{}
 	if t.Input != "" {
-		prompt := t.Input
-		if len(t.CatchUp) > 0 {
-			prompt = handover.Block(handover.Select(t.CatchUp, t.Input, t.HandoverBudget)) + "\n" + t.Input
-		}
-		items = append(items, map[string]string{"type": "text", "text": prompt})
+		items = append(items, map[string]string{"type": "text", "text": handover.Prompt(t)})
 	}
 	argv := append([]string{"codex", "app-server"}, b.cfg.Args...)
 
@@ -183,7 +180,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, raw json.RawMessage, em
 		case m.Method != "" && len(m.ID) > 0:
 			runErr = send(declineOrReject(m))
 		case m.Method != "":
-			ended, runErr = notification(m, scan.Bytes(), emit)
+			ended, runErr = notification(m, emit)
 		case m.Error != nil:
 			runErr = fmt.Errorf("request %s failed: %s", m.ID, m.Error.Message)
 		default:
@@ -264,8 +261,9 @@ type item struct {
 	Error     json.RawMessage `json:"error"`
 }
 
-func notification(m message, line []byte, emit func(faden.Event) error) (bool, error) {
-	native := append(json.RawMessage(nil), line...)
+// notification stores a completed item or the turn's end. Other
+// notifications, such as streaming deltas, are dropped.
+func notification(m message, emit func(faden.Event) error) (bool, error) {
 	switch m.Method {
 	case "item/completed":
 		var p struct {
@@ -274,7 +272,7 @@ func notification(m message, line []byte, emit func(faden.Event) error) (bool, e
 		if err := json.Unmarshal(m.Params, &p); err != nil {
 			return false, err
 		}
-		return false, emitItem(p.Item, native, emit)
+		return false, emitItem(p.Item, emit)
 	case "turn/completed":
 		var p struct {
 			Turn struct {
@@ -287,7 +285,7 @@ func notification(m message, line []byte, emit func(faden.Event) error) (bool, e
 		if err := json.Unmarshal(m.Params, &p); err != nil {
 			return false, err
 		}
-		if err := emit(faden.Event{Kind: faden.TurnEnded, Text: p.Turn.Status, Native: native}); err != nil {
+		if err := emit(faden.Event{Kind: faden.TurnEnded, Text: p.Turn.Status}); err != nil {
 			return false, err
 		}
 		if p.Turn.Status != "completed" {
@@ -302,11 +300,11 @@ func notification(m message, line []byte, emit func(faden.Event) error) (bool, e
 	return false, nil
 }
 
-func emitItem(it item, native json.RawMessage, emit func(faden.Event) error) error {
+func emitItem(it item, emit func(faden.Event) error) error {
 	var call, result faden.Event
 	switch it.Type {
 	case "agentMessage":
-		return emit(faden.Event{Kind: faden.AssistantMessage, Text: it.Text, Native: native})
+		return emit(faden.Event{Kind: faden.AssistantMessage, Text: it.Text})
 	case "commandExecution":
 		input, _ := json.Marshal(map[string]string{"command": it.Command, "cwd": it.CWD})
 		call = faden.Event{Tool: "commandExecution", Action: it.Command, Input: input}
@@ -328,8 +326,8 @@ func emitItem(it item, native json.RawMessage, emit func(faden.Event) error) err
 	default:
 		return nil
 	}
-	call.Kind, call.Native = faden.ToolCall, native
-	result.Kind, result.Tool, result.Native = faden.ToolResult, call.Tool, native
+	call.Kind = faden.ToolCall
+	result.Kind, result.Tool = faden.ToolResult, call.Tool
 	if err := emit(call); err != nil {
 		return err
 	}
