@@ -8,15 +8,13 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/nogo/faden"
 	"github.com/nogo/faden/handover"
 )
 
-const (
-	bashName      = "bash"
-	maxToolOutput = 32 << 10
-)
+const bashName = "bash"
 
 // Tool is a function the model may call.
 type Tool struct {
@@ -74,9 +72,6 @@ func bashTool(rt faden.Runtime, key string, setup faden.Setup) Tool {
 				return "", err
 			}
 			out := string(res.Output)
-			if len(out) > maxToolOutput {
-				out = out[:maxToolOutput] + "\n[output cut]"
-			}
 			if res.ExitCode != 0 {
 				return "", fmt.Errorf("%s\n[exit code %d]", out, res.ExitCode)
 			}
@@ -104,4 +99,17 @@ type attemptEvents struct{ a *faden.Attempt }
 
 func (e attemptEvents) Events(ctx context.Context, _ string, after int64) ([]faden.Event, error) {
 	return e.a.Events(ctx, after)
+}
+
+// cutOutput shortens s to at most limit bytes without splitting a rune and
+// appends a marker that says it was cut. It returns s itself when it fits.
+func cutOutput(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	n := limit
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return fmt.Sprintf("%s\n[output cut at %d bytes]", s[:n], limit)
 }

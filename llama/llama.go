@@ -24,8 +24,10 @@ import (
 	"github.com/nogo/faden/handover"
 )
 
-// maxSteps bounds the model calls of one Run.
-const maxSteps = 40
+const (
+	defaultMaxOutput = 12000
+	defaultMaxSteps  = 40
+)
 
 // Config wires a Backend.
 type Config struct {
@@ -39,6 +41,14 @@ type Config struct {
 	Tools []Tool
 	// Client is the HTTP client; nil means http.DefaultClient.
 	Client *http.Client
+	// MaxOutput is the most bytes of one tool result the model sees and the
+	// store keeps. Zero means 12,000. A longer result is cut at a rune boundary
+	// and ends with a marker.
+	MaxOutput int
+	// MaxTokens is sent as max_tokens when not zero.
+	MaxTokens int
+	// MaxSteps bounds the model calls of one Run. Zero means 40.
+	MaxSteps int
 }
 
 // Backend implements faden.Backend.
@@ -50,6 +60,12 @@ type Backend struct {
 func New(cfg Config) (*Backend, error) {
 	if cfg.Client == nil {
 		cfg.Client = http.DefaultClient
+	}
+	if cfg.MaxOutput <= 0 {
+		cfg.MaxOutput = defaultMaxOutput
+	}
+	if cfg.MaxSteps <= 0 {
+		cfg.MaxSteps = defaultMaxSteps
 	}
 	for _, t := range cfg.Tools {
 		if t.Name == "" || t.Run == nil {
@@ -253,8 +269,8 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 		if !tr.needsModel() {
 			return nil
 		}
-		if step++; step > maxSteps {
-			return fmt.Errorf("llama: no final answer after %d model calls", maxSteps)
+		if step++; step > b.cfg.MaxSteps {
+			return fmt.Errorf("llama: no final answer after %d model calls", b.cfg.MaxSteps)
 		}
 		answer, err := b.complete(ctx, model, tools, system(a.Setup().System, tr.messages))
 		if err != nil {
@@ -321,6 +337,7 @@ func (b *Backend) execute(ctx context.Context, tools map[string]Tool, tr *transc
 		if failed {
 			out = "error: " + err.Error()
 		}
+		out = cutOutput(out, b.cfg.MaxOutput)
 	}
 	if err := emit(faden.Event{Kind: faden.ToolResult, Tool: c.Function.Name, Output: out, Failed: failed, Native: idJSON}); err != nil {
 		return fmt.Errorf("llama: store result %s: %w", c.ID, err)
@@ -346,10 +363,11 @@ func (b *Backend) complete(ctx context.Context, model string, tools map[string]T
 		defs = append(defs, toolDef{"function", function{t.Name, t.Description, t.schema()}})
 	}
 	body, err := json.Marshal(struct {
-		Model    string    `json:"model"`
-		Messages []message `json:"messages"`
-		Tools    []toolDef `json:"tools,omitempty"`
-	}{model, msgs, defs})
+		Model     string    `json:"model"`
+		Messages  []message `json:"messages"`
+		Tools     []toolDef `json:"tools,omitempty"`
+		MaxTokens int       `json:"max_tokens,omitempty"`
+	}{model, msgs, defs, b.cfg.MaxTokens})
 	if err != nil {
 		return message{}, fmt.Errorf("llama: encode request: %w", err)
 	}

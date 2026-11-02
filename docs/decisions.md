@@ -187,3 +187,15 @@ Rejected: one hook per backend config, which wires the same thing in three place
 **llama keeps `reasoning_content` only in the assistant's native payload.** The next model request carries it, including after continuation rebuilds the messages. Empty reasoning is omitted. `Event.Text` remains the answer; handover and `read_thread` expose no reasoning.
 
 Measured with `mise exec -- go test ./llama -run TestReasoningStaysNative -v`: one invented JSONL run stored 1,695 bytes before and 1,741 bytes after. The server returned “I will add two and three.” with an `add` call, followed by “All done.” The measurement counts the session file, including turn records and events. Reasoning adds storage for the native field; it is not copied into normalized text. This is a storage measurement, not a heap-memory claim.
+
+## Decided 2026-11-02 — llama limits (#23)
+
+**llama limits tool output, answer tokens and model calls.** `Config.MaxOutput` (12,000 bytes), `Config.MaxTokens` (sent as `max_tokens` when not zero) and `Config.MaxSteps` (40) bound a small model's context and a run's length.
+
+- A tool result longer than `MaxOutput` is cut at a rune boundary and ends with `[output cut at N bytes]`. This covers `bash`, host tools and `read_thread`, and error text too.
+- **The store keeps the cut result.** The model saw the cut text, so a rebuild matches it. The old `bash`-only cut at 32 KiB is gone; one cut now serves every tool. The cut comes after the exit-code line of `bash`, so a very long output loses that line.
+- A tool still returns its whole output to the loop. The loop drops the excess before it stores or sends it.
+
+Measured with `go test ./llama -run StoredBytes -v` (session file with one user message, two answers, one call and one 100 KB tool result): 103,990 bytes with `MaxOutput` set to 1 GiB (no cut, as before), 13,619 bytes with the default 12,000. This is a storage measurement, not a heap measurement.
+
+Rejected: cutting inside each tool, which leaves host tools uncut; a limit in tokens, which needs a tokenizer.
