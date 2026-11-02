@@ -41,6 +41,9 @@ type Config struct {
 	Model string
 	// Runtime runs the bash tool. Nil leaves bash out.
 	Runtime faden.Runtime
+	// FileTools adds read, write and edit, which run through Runtime in the
+	// attempt's Dir. It needs Runtime. A host tool may not reuse their names.
+	FileTools bool
 	// Tools are the host's Go functions.
 	Tools []Tool
 	// Client is the HTTP client; nil means http.DefaultClient.
@@ -71,12 +74,18 @@ func New(cfg Config) (*Backend, error) {
 	if cfg.MaxSteps <= 0 {
 		cfg.MaxSteps = defaultMaxSteps
 	}
+	if cfg.FileTools && cfg.Runtime == nil {
+		return nil, errors.New("llama: FileTools needs a Runtime")
+	}
 	for _, t := range cfg.Tools {
 		if t.Name == "" || t.Run == nil {
 			return nil, errors.New("llama: tool needs a name and a Run function")
 		}
 		if t.Name == bashName || t.Name == handover.ThreadTool {
 			return nil, fmt.Errorf("llama: tool name %q is built in", t.Name)
+		}
+		if cfg.FileTools && slices.Contains(fileToolNames, t.Name) {
+			return nil, fmt.Errorf("llama: tool name %q is a file tool", t.Name)
 		}
 	}
 	return &Backend{cfg: cfg}, nil

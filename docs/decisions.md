@@ -207,3 +207,16 @@ Rejected: cutting inside each tool, which leaves host tools uncut; a limit in to
 **`Config.Key` is an optional bearer token supplied by the host.** It stays in backend configuration and the Authorization header. Errors omit response bodies and redact the key from transport errors, because either can echo credentials.
 
 **A model call gets at most four attempts.** Network failures, 429 and 5xx retry after 1, 2 and 4 seconds. A longer `Retry-After` wins, in seconds or HTTP date form. Other HTTP failures and malformed JSON do not retry. Cancellation interrupts requests and waits. Failed calls emit no events; successful earlier calls in the turn remain stored. Retries do not consume additional `MaxSteps`, which bounds model answers in the loop.
+
+## Decided 2026-11-02 — llama file tools (#25)
+
+**`llama.Config.FileTools` adds `read`, `write` and `edit`.** forge drops pi, so local models need to read, write and edit files where `bash` runs.
+
+- They run through `faden.Runtime` with `sh`, so a container host edits files in the container. Paths are relative to `Setup.Dir`. The runtime needs `readlink`, `head`, `tail`, `tr`, `wc` and `mkdir`.
+- A path is cleaned in Go, so `..` cannot hide behind a missing directory. The script then resolves symlinks of the deepest existing ancestor and rejects a path that leaves `Dir`. `..`, an absolute path and a symlink are all rejected.
+- `read` takes `path`, `offset` (line, from 1) and `limit` (lines; 0 reads to the end). It is `Safe`. The runtime output is capped at `MaxOutput` plus one byte, so a huge file is never held whole. A file with a NUL byte in its first 8 KiB (binary, image) is an error.
+- `write` replaces the file and creates missing directories. `edit` takes `path`, `old` and `new`; `old` must match exactly once. Neither is `Safe`.
+- `edit` holds the file in memory, so it refuses files over 1 MiB.
+- `FileTools` needs `Runtime`. With `FileTools` on, a host tool named `read`, `write` or `edit` is an error at `New`.
+
+Rejected: reading and writing files from Go, which touches the host's disk instead of the container's; line-numbered `read` output, which models then copy into `edit`.

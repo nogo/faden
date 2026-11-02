@@ -50,7 +50,6 @@ A restart picks the thread up where it was cut. A switch to another model hands 
 
 - The Codex backend, after Claude and llama.cpp work.
 - Streaming fragments (`content.delta`) to a live view. Only completed items are stored and delivered in the first version.
-- Coding tools for the llama.cpp loop beyond `bash` (pi's read, write, edit).
 - A summary written by the outgoing model as another handover mode.
 - Approvals: a tool call that waits for the owner's answer.
 - Moving the consumers onto faden. Each move is its own change in its own repository.

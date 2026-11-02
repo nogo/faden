@@ -47,6 +47,11 @@ func (b *Backend) toolset(a *faden.Attempt, session, key string) map[string]Tool
 	}
 	if b.cfg.Runtime != nil {
 		tools[bashName] = bashTool(b.cfg.Runtime, key, a.Setup())
+		if b.cfg.FileTools {
+			for _, t := range fileTools(b.cfg.Runtime, key, a.Setup(), b.cfg.MaxOutput) {
+				tools[t.Name] = t
+			}
+		}
 	}
 	tools[handover.ThreadTool] = readThreadTool(a, session)
 	return tools
