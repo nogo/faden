@@ -154,5 +154,8 @@ Rejected: an exit-code field, which Claude cannot fill; `[exit N]` appended to O
 - **A backend saves its cursor through `SaveCursor`; `Run` returns no cursor.** Claude and Codex already saved the same cursor during the run, so the returned one was a second path to the same write.
 - **`Turn.CatchUp` and `Turn.HandoverBudget` moved to `Attempt.CatchUp()`.** They were never stored but sat on the public `Turn`, so a host saw them empty after `Wait`. `handover.Prompt(t, a)` renders them; the root package cannot, because `handover` imports it.
 - **`Session.Backend` is gone,** with the `Store` rule that wrote it on every submit. Nothing in faden read it: the handover boundary comes from executed turns. jsonl now writes a session record only when it creates the session; sqlite inserts the session row once. Old files and rows still load, because their extra field is ignored.
+- **`NewAttempt` fails for an unknown session** with `ErrNotFound`, so the mistake shows where it is made, not at the first `Emit`.
+
+Measured after the change: `FADEN_LIVE=1 go test -v ./claude ./codex -run TestLiveResumeAfterKill` (claude 2.1.316, codex-cli 0.166.0) answered `FIRST_FILE_KNOWN` on both and finished all three files. One run each.
 
 Rejected: one constructor for all backends (`faden.New("claude", cfg)`), which needs one config whose fields mostly apply to one backend; a `faden.Open` that creates jsonl or sqlite itself, which is an import cycle; an interface for the attempt, which is easier to fake but breaks every backend when it grows.

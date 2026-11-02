@@ -3,7 +3,7 @@ package faden
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"time"
 )
 
@@ -20,12 +20,13 @@ type Attempt struct {
 }
 
 // NewAttempt binds a run of t to store, with the cursor the store holds for
-// t.Backend. The runner makes its own; call this to run a backend without a
-// runner, as a backend's tests do. Such an attempt has no catch-up.
+// t.Backend. t must be submitted; an unknown session is ErrNotFound. The
+// runner makes its own; call this to run a backend without a runner, as a
+// backend's tests do. Such an attempt has no catch-up.
 func NewAttempt(ctx context.Context, store Store, t Turn) (*Attempt, error) {
 	s, err := store.Session(ctx, t.Session)
-	if err != nil && !errors.Is(err, ErrNotFound) {
-		return nil, err
+	if err != nil {
+		return nil, fmt.Errorf("faden: attempt %s: %w", t.RequestID, err)
 	}
 	return &Attempt{store: store, turn: t, cursor: s.Cursors[t.Backend]}, nil
 }
