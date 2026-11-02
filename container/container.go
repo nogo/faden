@@ -20,6 +20,7 @@ package container
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -76,8 +77,8 @@ func (r Runtime) start(ctx context.Context, command faden.Command, output, stder
 	}
 
 	args := []string{"exec", "--interactive"}
-	if r.Dir != "" {
-		args = append(args, "--workdir", r.Dir)
+	if dir := cmp.Or(command.Dir, r.Dir); dir != "" {
+		args = append(args, "--workdir", dir)
 	}
 	for _, kv := range append(append([]string(nil), r.Env...), command.Env...) {
 		name, _, ok := strings.Cut(kv, "=")

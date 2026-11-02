@@ -56,3 +56,15 @@ func TestLocalRequiresPIDDirectory(t *testing.T) {
 		t.Fatal("missing PIDDir accepted")
 	}
 }
+
+func TestLocalCommandDirOverridesRuntimeDir(t *testing.T) {
+	runtimeDir, commandDir := t.TempDir(), t.TempDir()
+	res, err := faden.Local{PIDDir: t.TempDir(), Dir: runtimeDir}.Run(t.Context(), faden.Command{Key: "test", Dir: commandDir, Argv: []string{"pwd"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := filepath.EvalSymlinks(commandDir)
+	if strings.TrimSpace(string(res.Output)) != want {
+		t.Fatalf("ran in %q, want %q", res.Output, want)
+	}
+}

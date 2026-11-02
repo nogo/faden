@@ -17,6 +17,7 @@ const (
 // crash cut off.
 type Runner struct {
 	budget   int
+	prepare  func(context.Context, Turn) (Setup, error)
 	store    Store
 	backends map[string]Backend
 	ctx      context.Context
@@ -119,8 +120,30 @@ type Submission struct {
 	Model     string
 }
 
-// Options controls handover context. Zero Budget uses 16,000 bytes.
-type Options struct{ Budget int }
+// Setup is the host's preparation of one attempt. A backend applies what it
+// can; a field it cannot apply is ignored. Setup is never stored, because Env
+// may carry a credential.
+type Setup struct {
+	// Dir is the working directory of the attempt.
+	Dir string
+	// Args follow the backend's own arguments.
+	Args []string
+	// Env holds NAME=value entries added to the command's environment.
+	Env []string
+	// System is the system prompt, added to the agent's own.
+	System string
+}
+
+// Options configures the runner.
+type Options struct {
+	// Budget is the byte budget of a handover. Zero uses 16,000 bytes.
+	Budget int
+	// Prepare, if set, runs before every attempt, a continuation included.
+	// t.Attempts is 1 for a first attempt and above 1 for a continuation, so
+	// a host can keep the workspace a killed attempt left. Its result reaches
+	// the backend through Attempt.Setup. An error fails the turn.
+	Prepare func(ctx context.Context, t Turn) (Setup, error)
+}
 
 // Open starts a runner on store with the backends by name. Before it returns,
 // every running turn has its attempt count raised in the store; each then
@@ -137,6 +160,7 @@ func Open(store Store, backends map[string]Backend, options ...Options) (*Runner
 	}
 	if len(options) > 0 {
 		r.budget = options[0].Budget
+		r.prepare = options[0].Prepare
 	}
 	turns, err := store.Unfinished(ctx)
 	if err != nil {
@@ -346,6 +370,16 @@ func (r *Runner) run(t Turn) error {
 		}
 	}
 	a := &Attempt{store: r.store, turn: t, cursor: session.Cursors[t.Backend]}
+	if r.prepare != nil {
+		setup, err := r.prepare(r.ctx, t)
+		if err != nil {
+			if r.ctx.Err() != nil {
+				return nil // closed: the turn stays running for the next Open
+			}
+			return r.finish(t, Failed, fmt.Sprintf("faden: prepare turn %s: %v", t.RequestID, err))
+		}
+		a.setup = setup
+	}
 	// One read serves catch-up, continuation and the input check. catchUp can
 	// emit only this turn's handover marker, which neither later step reads.
 	events, err := r.store.Events(r.ctx, t.Session, 0)

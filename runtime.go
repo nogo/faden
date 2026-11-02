@@ -2,6 +2,7 @@ package faden
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -22,6 +23,8 @@ type Result struct {
 // Command describes one command belonging to a turn. Env adds to the runtime environment.
 // Nil Stdout buffers output in Result.Output; otherwise only stderr is buffered.
 type Command struct {
+	// Dir is the working directory of the command; empty uses the runtime's own.
+	Dir    string
 	Key    string
 	Argv   []string
 	Env    []string
@@ -107,7 +110,7 @@ func (l Local) run(ctx context.Context, command Command, output, stderr io.Write
 	args := append([]string{"-c", `read -r ready <&3 && exec 3<&- && exec "$@"`, "sh", program}, argv[1:]...)
 	cmd := exec.CommandContext(ctx, "/bin/sh", args...)
 	cmd.ExtraFiles = []*os.File{gate}
-	cmd.Dir = l.Dir
+	cmd.Dir = cmp.Or(command.Dir, l.Dir)
 	cmd.Env = l.Env
 	if cmd.Env == nil {
 		cmd.Env = os.Environ()

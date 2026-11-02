@@ -373,3 +373,58 @@ func TestFailedToolResultIsMarked(t *testing.T) {
 		t.Fatalf("events: %+v", got)
 	}
 }
+
+// A fake claude that records its directory, arguments and one variable.
+const recordingClaude = "#!/bin/sh\npwd > pwd\nprintf '%s\\n' \"$@\" > args\nprintf '%s' \"$HOST_VAR\" > var\ncat > input\ncat fixture\n"
+
+func TestPrepareSetupReachesCommandAndSystemOnlyOnFirstAttempt(t *testing.T) {
+	dir, work := t.TempDir(), t.TempDir()
+	os.WriteFile(filepath.Join(dir, "claude"), []byte(recordingClaude), 0700)
+	os.WriteFile(filepath.Join(work, "fixture"), []byte(stream), 0600)
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	store := openStore(t, filepath.Join(dir, "store"))
+	b, _ := New(Config{Runtime: faden.Local{PIDDir: dir, Dir: dir}, Args: []string{"--own"}})
+	var attempts []int
+	runner, err := faden.Open(store, map[string]faden.Backend{"claude": b}, faden.Options{Prepare: func(_ context.Context, turn faden.Turn) (faden.Setup, error) {
+		attempts = append(attempts, turn.Attempts)
+		return faden.Setup{Dir: work, Args: []string{"--effort", "high"}, Env: []string{"HOST_VAR=invented"}, System: "invented rules"}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runner.Close()
+	submit := func(id string) {
+		t.Helper()
+		if _, err := runner.Submit(t.Context(), faden.Submission{Session: "s", RequestID: id, Input: "hi", Backend: "claude"}); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := runner.Wait(t.Context(), id); err != nil || got.Status != faden.Done {
+			t.Fatalf("turn %s = %+v, %v", id, got, err)
+		}
+	}
+	read := func(name string) string {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(work, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+
+	submit("r1")
+	wantDir, _ := filepath.EvalSymlinks(work)
+	args := read("args")
+	if strings.TrimSpace(read("pwd")) != wantDir || read("var") != "invented" ||
+		!strings.Contains(args, "--append-system-prompt\ninvented rules\n") || !strings.HasSuffix(args, "--own\n--append-system-prompt\ninvented rules\n--effort\nhigh\n") {
+		t.Fatalf("pwd %q var %q args %q", read("pwd"), read("var"), args)
+	}
+
+	submit("r2") // the session has a cursor now: Claude resumes
+	args = read("args")
+	if strings.Contains(args, "--append-system-prompt") || !strings.HasSuffix(args, "--effort\nhigh\n") {
+		t.Fatalf("resumed args %q", args)
+	}
+	if len(attempts) != 2 || attempts[0] != 1 || attempts[1] != 1 {
+		t.Fatalf("Prepare attempts %v", attempts)
+	}
+}

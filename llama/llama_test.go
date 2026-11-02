@@ -591,3 +591,40 @@ func (w readyWriter) Write(p []byte) (int, error) {
 	}
 	return len(p), nil
 }
+
+func TestPrepareSystemComesFirstUnstoredAndBashUsesDirAndEnv(t *testing.T) {
+	rec, srv := newReplay(t, "bash_setup_call.json", "final.json")
+	dir, work := t.TempDir(), t.TempDir()
+	store := openStore(t, filepath.Join(dir, "store"))
+	b, _ := llama.New(llama.Config{URL: srv.URL, Runtime: faden.Local{PIDDir: dir, Dir: dir}})
+	r, err := faden.Open(store, map[string]faden.Backend{"llama": b}, faden.Options{Prepare: func(context.Context, faden.Turn) (faden.Setup, error) {
+		return faden.Setup{Dir: work, Env: []string{"HOST_VAR=invented"}, System: "invented rules"}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	r.Submit(t.Context(), faden.Submission{Session: "s1", RequestID: "r1", Input: "where am I?", Backend: "llama", Model: "test-model"})
+	if got, err := r.Wait(t.Context(), "r1"); err != nil || got.Status != faden.Done {
+		t.Fatalf("turn = %+v, %v", got, err)
+	}
+	for i, req := range rec.sent() {
+		if req.Messages[0].Role != "system" || req.Messages[0].Content != "invented rules" || req.Messages[1].Role != "user" {
+			t.Fatalf("request %d messages = %+v, want the system message first", i, req.Messages)
+		}
+	}
+	events, _ := store.Events(t.Context(), "s1", 0)
+	want, _ := filepath.EvalSymlinks(work)
+	var result string
+	for _, e := range events {
+		if strings.Contains(e.Text, "invented rules") || strings.Contains(string(e.Native), "invented rules") {
+			t.Fatalf("system prompt stored in %+v", e)
+		}
+		if e.Kind == faden.ToolResult {
+			result = e.Output
+		}
+	}
+	if !strings.Contains(result, want) || !strings.Contains(result, "invented") {
+		t.Fatalf("bash result %q, want dir %s and env", result, want)
+	}
+}

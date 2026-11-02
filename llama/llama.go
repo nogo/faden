@@ -255,7 +255,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 		if step++; step > maxSteps {
 			return fmt.Errorf("llama: no final answer after %d model calls", maxSteps)
 		}
-		answer, err := b.complete(ctx, model, tools, tr.messages)
+		answer, err := b.complete(ctx, model, tools, system(a.Setup().System, tr.messages))
 		if err != nil {
 			return err
 		}
@@ -276,6 +276,15 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 		tr.startMessage()
 		tr.messages = append(tr.messages, answer)
 	}
+}
+
+// system puts the host's system prompt first. The prompt is not part of the
+// transcript, so it is never stored as an event.
+func system(prompt string, msgs []message) []message {
+	if prompt == "" {
+		return msgs
+	}
+	return append([]message{{Role: "system", Content: prompt}}, msgs...)
 }
 
 // execute stores a call, runs it unless it was interrupted, and stores the result.

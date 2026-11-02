@@ -96,3 +96,15 @@ printf '\n' >> "$FAKE_LOG"
 case "$*" in *setsid*) exit "${FAKE_EXIT:-0}";; esac
 exit 0
 `
+
+func TestCommandDirOverridesRuntimeDir(t *testing.T) {
+	log := fakeEngine(t)
+	r := container.Runtime{Container: "box", Dir: "/work"}
+	if _, err := r.Run(t.Context(), faden.Command{Key: "test", Dir: "/views/s1", Argv: []string{"claude"}}); err != nil {
+		t.Fatal(err)
+	}
+	start := calls(t, log)[1]
+	if !strings.Contains(start, "--workdir /views/s1 box") || strings.Contains(start, "--workdir /work") {
+		t.Fatalf("start call %q, want workdir /views/s1", start)
+	}
+}

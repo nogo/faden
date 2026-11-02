@@ -48,15 +48,16 @@ func (b *Backend) toolset(a *faden.Attempt, session, key string) map[string]Tool
 		tools[t.Name] = t
 	}
 	if b.cfg.Runtime != nil {
-		tools[bashName] = bashTool(b.cfg.Runtime, key)
+		tools[bashName] = bashTool(b.cfg.Runtime, key, a.Setup())
 	}
 	tools[handover.ThreadTool] = readThreadTool(a, session)
 	return tools
 }
 
-// bashTool runs a command line through the runtime. It is never Safe. A
+// bashTool runs a command line through the runtime, in the attempt's Dir and
+// with its Env. It is never Safe. A
 // non-zero exit is an error, so the result is marked failed.
-func bashTool(rt faden.Runtime, key string) Tool {
+func bashTool(rt faden.Runtime, key string, setup faden.Setup) Tool {
 	return Tool{
 		Name:        bashName,
 		Description: "Run a shell command and return its output and exit code.",
@@ -68,7 +69,7 @@ func bashTool(rt faden.Runtime, key string) Tool {
 			if err := json.Unmarshal(args, &a); err != nil || a.Command == "" {
 				return "", errors.New("arguments need a non-empty command")
 			}
-			res, err := rt.Run(ctx, faden.Command{Key: key, Argv: []string{"bash", "-c", a.Command}})
+			res, err := rt.Run(ctx, faden.Command{Key: key, Dir: setup.Dir, Env: setup.Env, Argv: []string{"bash", "-c", a.Command}})
 			if err != nil {
 				return "", err
 			}

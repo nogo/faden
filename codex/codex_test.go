@@ -32,6 +32,7 @@ const turnLines = `{"method":"turn/started","params":{"turn":{"id":"turn_1","sta
 // to "got", and replays "fixture" after turn/start.
 const fakeCodex = `#!/bin/sh
 printf '%s\n' "$@" > args
+printf '%s' "$HOST_VAR" > var
 while IFS= read -r line; do
   printf '%s\n' "$line" >> got
   case $line in
@@ -368,6 +369,50 @@ func TestFailedToolResultIsMarked(t *testing.T) {
 		}
 		if len(got) != 2 || got[0].Failed || got[1].Failed != want {
 			t.Errorf("%s: events %+v, want result failed %v", raw, got, want)
+		}
+	}
+}
+
+func TestPrepareSetupReachesAppServerAndBothThreadRequests(t *testing.T) {
+	dir := setup(t, turnLines)
+	store, err := jsonl.Open(filepath.Join(dir, "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	b, _ := New(Config{Runtime: faden.Local{PIDDir: dir, Dir: dir}, Args: []string{"--own"}})
+	runner, err := faden.Open(store, map[string]faden.Backend{"codex": b}, faden.Options{Prepare: func(context.Context, faden.Turn) (faden.Setup, error) {
+		return faden.Setup{Dir: "/invented/ws", Args: []string{"--extra"}, Env: []string{"HOST_VAR=invented"}, System: "invented rules"}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runner.Close()
+	for _, id := range []string{"r1", "r2"} {
+		if _, err := runner.Submit(t.Context(), faden.Submission{Session: "s", RequestID: id, Input: "hi", Backend: "codex"}); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := runner.Wait(t.Context(), id); err != nil || got.Status != faden.Done {
+			t.Fatalf("turn %s = %+v, %v", id, got, err)
+		}
+	}
+	args, _ := os.ReadFile(filepath.Join(dir, "args"))
+	env, _ := os.ReadFile(filepath.Join(dir, "var"))
+	if string(args) != "app-server\n--own\n--extra\n" || string(env) != "invented" {
+		t.Fatalf("args %q env %q", args, env)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "got"))
+	for _, method := range []string{"thread/start", "thread/resume"} {
+		var line string
+		for l := range strings.SplitSeq(string(got), "\n") {
+			if strings.Contains(l, `"method":"`+method+`"`) {
+				line = l
+			}
+		}
+		for _, need := range []string{`"cwd":"/invented/ws"`, `"developerInstructions":"invented rules"`} {
+			if !strings.Contains(line, need) {
+				t.Errorf("%s request %q lacks %s", method, line, need)
+			}
 		}
 	}
 }

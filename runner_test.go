@@ -2,10 +2,14 @@ package faden_test
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -373,5 +377,74 @@ func TestContinuationCarriesTheKilledTurnsStoredEvents(t *testing.T) {
 				t.Fatalf("input %q, catch-up %q", turn.Input, block)
 			}
 		})
+	}
+}
+
+func TestPrepareRunsBeforeEveryAttemptAndReachesTheBackend(t *testing.T) {
+	dir := t.TempDir()
+	seedRunning(t, dir, 1)
+	store := openStore(t, dir)
+	var prepared []int
+	var got faden.Setup
+	b := &fake{run: func(_ context.Context, _ faden.Turn, a *faden.Attempt) error {
+		got = a.Setup()
+		return nil
+	}}
+	want := faden.Setup{Dir: "/ws", Args: []string{"--effort", "high"}, Env: []string{"TOKEN=invented"}, System: "rules"}
+	r, err := faden.Open(store, map[string]faden.Backend{"fake": b}, faden.Options{Prepare: func(_ context.Context, turn faden.Turn) (faden.Setup, error) {
+		prepared = append(prepared, turn.Attempts)
+		return want, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	wait(t, r, "r1") // a continuation: Open raised the attempt to 2
+	r.Submit(t.Context(), sub("s2", "r2", "fresh"))
+	wait(t, r, "r2")
+	if len(prepared) != 2 || prepared[0] != 2 || prepared[1] != 1 {
+		t.Fatalf("Prepare saw attempts %v, want [2 1]", prepared)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("attempt setup = %+v, want %+v", got, want)
+	}
+}
+
+func TestPrepareErrorFailsTurnWithoutCallingBackend(t *testing.T) {
+	store := openStore(t, t.TempDir())
+	called := false
+	b := &fake{run: func(context.Context, faden.Turn, *faden.Attempt) error {
+		called = true
+		return nil
+	}}
+	r, _ := faden.Open(store, map[string]faden.Backend{"fake": b}, faden.Options{Prepare: func(context.Context, faden.Turn) (faden.Setup, error) {
+		return faden.Setup{}, errors.New("no workspace")
+	}})
+	defer r.Close()
+	r.Submit(t.Context(), sub("s1", "r1", "x"))
+	got := wait(t, r, "r1")
+	if got.Status != faden.Failed || !strings.Contains(got.Error, "no workspace") || called {
+		t.Fatalf("turn = %+v, backend called %v", got, called)
+	}
+}
+
+func TestSetupIsNotStored(t *testing.T) {
+	dir := t.TempDir()
+	store := openStore(t, dir)
+	b := &fake{run: func(ctx context.Context, _ faden.Turn, a *faden.Attempt) error {
+		return a.Emit(ctx, faden.Event{Kind: faden.AssistantMessage, Text: "ok"})
+	}}
+	r, _ := faden.Open(store, map[string]faden.Backend{"fake": b}, faden.Options{Prepare: func(context.Context, faden.Turn) (faden.Setup, error) {
+		return faden.Setup{Env: []string{"KEY=invented-secret"}, System: "invented-rules"}, nil
+	}})
+	defer r.Close()
+	r.Submit(t.Context(), sub("s1", "r1", "x"))
+	wait(t, r, "r1")
+	files, _ := filepath.Glob(filepath.Join(dir, "*"))
+	for _, f := range files {
+		data, _ := os.ReadFile(f)
+		if bytes.Contains(data, []byte("invented-secret")) || bytes.Contains(data, []byte("invented-rules")) {
+			t.Fatalf("%s holds the setup", f)
+		}
 	}
 }

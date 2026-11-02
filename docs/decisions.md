@@ -165,3 +165,19 @@ Rejected: one constructor for all backends (`faden.New("claude", cfg)`), which n
 - **`go 1.27` in `go.mod`, not a patch version.** The `go` line is a minimum for every host that embeds faden; `go 1.27.3` would force sidenote (on 1.27.1) to upgrade. `mise.toml` still pins the toolchain faden is checked with.
 - **MIT license.** The shortest common license that pkg.go.dev recognizes. Rejected: Apache-2.0, whose patent grant and NOTICE rules weigh more than a personal library needs; BSD-3, whose extra clause adds nothing here.
 - **CI runs `mise run check`,** the local gate, on Linux. Actions are pinned by commit SHA.
+
+## Decided 2026-11-02 — prepare each attempt (#21)
+
+**The host sets up every attempt through one hook: `faden.Options.Prepare func(ctx, faden.Turn) (faden.Setup, error)`.** One runner then serves sessions that each have their own workspace, rules and tools (sidenote's views, invest's dated prompt, forge's coding prompt).
+
+- The runner calls `Prepare` before every attempt, a continuation included. `t.Attempts` is 1 for a first attempt and above 1 for a continuation, so a host can keep the workspace a killed attempt left. The backend reads the result through `Attempt.Setup()`. A runner without a hook gives the zero `Setup`.
+- `Setup{Dir, Args, Env, System}`:
+  - Claude: `Dir` is the command's directory, `Args` follow the backend's own, `Env` joins the command's, `System` is `--append-system-prompt`. Claude ignores a new system prompt on a resumed session (sidenote, checked with haiku), so `System` reaches it on a session's first attempt only. A host that changes rules mid-session puts the change in the prompt.
+  - Codex: `Dir` is `cwd` and `System` is `developerInstructions`, on `thread/start` and `thread/resume`. `Args` follow the backend's own and `Env` joins the command's. The two thread parameters are unverified against a live Codex here; sidenote verified them.
+  - llama: `System` is the first system message of each request. It is not an event, so the stored transcript never holds it. `Dir` and `Env` go to `bash`. `Args` has no meaning and is ignored.
+- `faden.Command.Dir` is new. `Local` and `container` use it before their own `Dir`.
+- A `Prepare` error fails the turn, as a backend error does. The failed attempt is not retried.
+- `Setup` is never stored: `Env` may carry a credential.
+- Effort and model flags come from the host's own record of the turn, through `Args`. `Turn` gets no new field.
+
+Rejected: one hook per backend config, which wires the same thing in three places; values in the context, which hide a required input from the signature.

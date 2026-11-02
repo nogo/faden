@@ -90,7 +90,9 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 	if t.Input != "" {
 		items = append(items, map[string]string{"type": "text", "text": handover.Prompt(t, a)})
 	}
+	setup := a.Setup()
 	argv := append([]string{"codex", "app-server"}, b.cfg.Args...)
+	argv = append(argv, setup.Args...)
 
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -109,7 +111,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		res, err := b.cfg.Runtime.Run(runCtx, faden.Command{Key: t.RequestID, Argv: argv, Stdin: stdinR, Stdout: stdoutW})
+		res, err := b.cfg.Runtime.Run(runCtx, faden.Command{Key: t.RequestID, Argv: argv, Env: setup.Env, Stdin: stdinR, Stdout: stdoutW})
 		stdinR.Close()
 		stdoutW.CloseWithError(err)
 		done <- outcome{res, err}
@@ -196,6 +198,13 @@ func answer(ctx context.Context, a *faden.Attempt, t faden.Turn, c *cursor, m me
 		params := map[string]any{}
 		if t.Model != "" {
 			params["model"] = t.Model
+		}
+		setup := a.Setup()
+		if setup.Dir != "" {
+			params["cwd"] = setup.Dir
+		}
+		if setup.System != "" {
+			params["developerInstructions"] = setup.System
 		}
 		if c.ThreadID != "" {
 			params["threadId"] = c.ThreadID

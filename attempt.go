@@ -17,6 +17,7 @@ type Attempt struct {
 	cursor  json.RawMessage
 	catchUp []Event
 	budget  int
+	setup   Setup
 }
 
 // NewAttempt binds a run of t to store, with the cursor the store holds for
@@ -30,6 +31,10 @@ func NewAttempt(ctx context.Context, store Store, t Turn) (*Attempt, error) {
 	}
 	return &Attempt{store: store, turn: t, cursor: s.Cursors[t.Backend]}, nil
 }
+
+// Setup is what the host's Prepare hook returned for this attempt, or the zero
+// Setup when the runner has no hook. It is never stored.
+func (a *Attempt) Setup() Setup { return a.setup }
 
 // Cursor is what this backend last saved for the session, or nil.
 func (a *Attempt) Cursor() json.RawMessage { return a.cursor }

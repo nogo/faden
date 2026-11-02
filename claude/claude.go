@@ -103,6 +103,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 		argv = append(argv, "--model", t.Model)
 	}
 	argv = append(argv, b.cfg.Args...)
+	setup := a.Setup()
 	runtime := b.cfg.Runtime
 	var env []string
 	if b.cfg.Threads != nil {
@@ -126,6 +127,12 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 		argv = append(argv, "--mcp-config", file.Name())
 		env = []string{mcp.TokenEnv + "=" + token}
 	}
+	// Claude ignores a new system prompt on a resumed session.
+	if setup.System != "" && !resume {
+		argv = append(argv, "--append-system-prompt", setup.System)
+	}
+	argv = append(argv, setup.Args...)
+	env = append(env, setup.Env...)
 	input, _ := json.Marshal(map[string]any{"type": "user", "message": map[string]string{"role": "user", "content": handover.Prompt(t, a)}})
 	input = append(input, '\n')
 	runCtx, cancel := context.WithCancel(ctx)
@@ -137,7 +144,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		res, err := runtime.Run(runCtx, faden.Command{Key: t.RequestID, Argv: argv, Env: env, Stdin: bytes.NewReader(input), Stdout: writer})
+		res, err := runtime.Run(runCtx, faden.Command{Key: t.RequestID, Dir: setup.Dir, Argv: argv, Env: env, Stdin: bytes.NewReader(input), Stdout: writer})
 		writer.CloseWithError(err)
 		done <- outcome{res, err}
 	}()
