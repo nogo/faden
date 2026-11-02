@@ -33,6 +33,16 @@ Base: [Effective Go](https://go.dev/doc/effective_go), [Go Code Review Comments]
 - Store before acting: a turn before it runs, a tool call before it runs, an attempt before a continuation.
 - Every new store behaviour gets a case in `storetest`, so all stores keep the same contract.
 
+### Memory
+- Read a session's events once per operation and pass the slice on. Never read the same session again to answer a second question.
+- Stream files and process output line by line (`bufio.Reader`, `bufio.Scanner`). Never `os.ReadFile` a store file or `io.ReadAll` an unbounded body. Cap every read that has no natural end.
+- A store keeps in memory only what it must answer at once (sessions, turns, cursors). Events stay on disk or in the database, found by offset or key.
+- Copy a buffer only when you keep it. A scanner's line is copied into the event that stores it. A line that is dropped is never copied.
+- Shorten before you build. Cut text with a byte bound before you join or convert it. Never use `[]rune(s)` or concatenate fields of unbounded size.
+- Store a fact once. A backend whose CLI keeps its own session (Claude Code, Codex) stores normalized fields only. A native payload is stored only by a backend that rebuilds its transcript from it (llama).
+- Prefer iterators and in-place forms (`slices`, `maps`, `strings.SplitSeq`, `strings.Cut`) to intermediate slices.
+- A memory claim names its measurement: `AllocedBytesPerOp` from `testing.Benchmark`, or a `runtime.MemStats` delta. Where a bound matters, a test guards it, as `handover` does for the cut.
+
 ### Concurrency
 - Every goroutine and every child process has an owner that stops it; `Close` waits for it.
 - A mutex guards named fields; say which in a comment on the field or struct.

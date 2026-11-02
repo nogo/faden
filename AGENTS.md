@@ -19,6 +19,7 @@ It is a personal project.
 - **No secrets** in files, commits, test fixtures or the store. A credential reaches a CLI through its environment or a host file.
 - **No private data.** Tests use invented sessions and recorded output from invented prompts.
 - **Decisions live in `docs/`, edited in the same change as the code** that implements or overturns them. To change one, strike the old line through with the date and the reason.
+- **Memory is a requirement.** Hosts run faden for months, and tool output is most of a thread. Keep no whole session or file in memory when one pass or a file offset does. Store and copy the same bytes once. A change that claims a memory win shows the numbers before and after. The rules are in `CODING_STANDARDS.md`, "Memory".
 - **Verify before claiming.** Name the command or test that proves it.
 - **Small changes.** Do the task, not the adjacent improvement.
 
