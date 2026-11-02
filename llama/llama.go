@@ -76,6 +76,14 @@ func New(cfg Config) (*Backend, error) {
 // ContinuesWithoutPrompt reports true: faden owns the transcript.
 func (b *Backend) ContinuesWithoutPrompt() bool { return true }
 
+// Stop stops the bash command an earlier attempt of t left running.
+func (b *Backend) Stop(ctx context.Context, t faden.Turn) error {
+	if b.cfg.Runtime == nil {
+		return nil
+	}
+	return b.cfg.Runtime.Stop(ctx, t.RequestID)
+}
+
 // message is one chat message in the OpenAI format.
 type message struct {
 	Role       string     `json:"role"`
@@ -229,11 +237,6 @@ func (tr *transcript) needsModel() bool {
 // Run implements faden.Backend. It returns no cursor: the events are the
 // transcript.
 func (b *Backend) Run(ctx context.Context, t faden.Turn, _ json.RawMessage, emit func(faden.Event) error) (json.RawMessage, error) {
-	if t.Attempts > 1 && b.cfg.Runtime != nil {
-		if err := b.cfg.Runtime.Stop(ctx, t.RequestID); err != nil {
-			return nil, fmt.Errorf("llama: stop turn %s: %w", t.RequestID, err)
-		}
-	}
 	events, err := b.cfg.Store.Events(ctx, t.Session, 0)
 	if err != nil {
 		return nil, fmt.Errorf("llama: read session %s: %w", t.Session, err)

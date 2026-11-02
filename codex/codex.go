@@ -58,6 +58,11 @@ func New(cfg Config) (*Backend, error) {
 // no input items continues the thread (as t3code does).
 func (*Backend) ContinuesWithoutPrompt() bool { return true }
 
+// Stop stops the app-server an earlier attempt of t left running.
+func (b *Backend) Stop(ctx context.Context, t faden.Turn) error {
+	return b.cfg.Runtime.Stop(ctx, t.RequestID)
+}
+
 type cursor struct {
 	ThreadID string `json:"thread_id"`
 }
@@ -85,11 +90,6 @@ type message struct {
 // Run starts the app-server, opens or resumes the thread, saves the thread id,
 // then starts the turn and stores completed items until the turn ends.
 func (b *Backend) Run(ctx context.Context, t faden.Turn, raw json.RawMessage, emit func(faden.Event) error) (json.RawMessage, error) {
-	if t.Attempts > 1 {
-		if err := b.cfg.Runtime.Stop(ctx, t.RequestID); err != nil {
-			return nil, fmt.Errorf("codex: stop turn %s: %w", t.RequestID, err)
-		}
-	}
 	var c cursor
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &c); err != nil {

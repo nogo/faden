@@ -338,6 +338,9 @@ func (r *Runner) run(t Turn) error {
 	}
 	send := t
 	if t.Attempts > 1 {
+		if err := backend.Stop(r.ctx, t); err != nil {
+			return r.finish(t, Failed, fmt.Sprintf("faden: stop turn %s: %v", t.RequestID, err))
+		}
 		send.Input = continuePrompt
 		if backend.ContinuesWithoutPrompt() {
 			send.Input = ""

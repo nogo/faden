@@ -117,6 +117,9 @@ type Backend interface {
 	// ContinuesWithoutPrompt reports whether the backend can continue an
 	// interrupted turn with no input. If not, the runner sends a prompt.
 	ContinuesWithoutPrompt() bool
+	// Stop stops whatever an earlier attempt of t left running, such as a
+	// CLI whose host died. The runner calls it before an attempt above one.
+	Stop(ctx context.Context, t Turn) error
 	// Run runs the turn. t.Input is what to send; it is empty when the
 	// backend continues without a prompt. cursor is what the last Run of
 	// this backend returned for the session, or nil. Run calls emit for each

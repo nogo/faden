@@ -23,6 +23,8 @@ type fake struct {
 
 func (f *fake) ContinuesWithoutPrompt() bool { return f.promptless }
 
+func (f *fake) Stop(context.Context, faden.Turn) error { return nil }
+
 func (f *fake) Run(ctx context.Context, t faden.Turn, c json.RawMessage, emit func(faden.Event) error) (json.RawMessage, error) {
 	return f.run(ctx, t, c, emit)
 }

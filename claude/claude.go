@@ -66,6 +66,11 @@ func New(cfg Config) (*Backend, error) {
 // ContinuesWithoutPrompt reports false: Claude needs a continuation message.
 func (*Backend) ContinuesWithoutPrompt() bool { return false }
 
+// Stop stops the Claude process an earlier attempt of t left running.
+func (b *Backend) Stop(ctx context.Context, t faden.Turn) error {
+	return b.cfg.Runtime.Stop(ctx, t.RequestID)
+}
+
 type cursor struct {
 	SessionID       string `json:"session_id"`
 	LastAssistantID string `json:"last_assistant_id,omitempty"`
@@ -73,11 +78,6 @@ type cursor struct {
 
 // Run saves the session UUID before launching Claude, then stores completed items.
 func (b *Backend) Run(ctx context.Context, t faden.Turn, raw json.RawMessage, emit func(faden.Event) error) (json.RawMessage, error) {
-	if t.Attempts > 1 {
-		if err := b.cfg.Runtime.Stop(ctx, t.RequestID); err != nil {
-			return nil, fmt.Errorf("claude: stop turn %s: %w", t.RequestID, err)
-		}
-	}
 	var c cursor
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &c); err != nil {

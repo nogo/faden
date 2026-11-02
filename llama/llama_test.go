@@ -554,6 +554,9 @@ func TestContinuedTurnWithoutCommandStopsLeftover(t *testing.T) {
 	if _, err := store.SubmitTurn(t.Context(), faden.Turn{RequestID: "r1", Session: "s1", Backend: "llama", Input: "go"}); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.SaveTurn(t.Context(), faden.Turn{RequestID: "r1", Session: "s1", Backend: "llama", Input: "go", Status: faden.Running, Attempts: 1}); err != nil {
+		t.Fatal(err)
+	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"done"}}]}`)
 	}))
@@ -562,9 +565,14 @@ func TestContinuedTurnWithoutCommandStopsLeftover(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = backend.Run(t.Context(), faden.Turn{RequestID: "r1", Session: "s1", Attempts: 2}, nil, func(faden.Event) error { return nil })
+	// The runner continues the turn as attempt 2 and stops its leftover first.
+	runner, err := faden.Open(store, map[string]faden.Backend{"llama": backend})
 	if err != nil {
 		t.Fatal(err)
+	}
+	defer runner.Close()
+	if got, err := runner.Wait(t.Context(), "r1"); err != nil || got.Status != faden.Done {
+		t.Fatalf("turn = %+v, %v", got, err)
 	}
 	select {
 	case <-done:

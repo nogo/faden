@@ -91,6 +91,8 @@ func TestPrefixesAndHostOwnership(t *testing.T) {
 type backend struct{ ran chan string }
 
 func (b backend) ContinuesWithoutPrompt() bool { return true }
+
+func (b backend) Stop(context.Context, faden.Turn) error { return nil }
 func (b backend) Run(_ context.Context, t faden.Turn, _ json.RawMessage, _ func(faden.Event) error) (json.RawMessage, error) {
 	b.ran <- t.RequestID
 	return nil, nil
