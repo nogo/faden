@@ -3,7 +3,6 @@ package sqlite_test
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -93,9 +92,9 @@ type backend struct{ ran chan string }
 func (b backend) ContinuesWithoutPrompt() bool { return true }
 
 func (b backend) Stop(context.Context, faden.Turn) error { return nil }
-func (b backend) Run(_ context.Context, t faden.Turn, _ json.RawMessage, _ func(faden.Event) error) (json.RawMessage, error) {
+func (b backend) Run(_ context.Context, t faden.Turn, _ *faden.Attempt) error {
 	b.ran <- t.RequestID
-	return nil, nil
+	return nil
 }
 
 func TestHostTransactionRollbackAndCommit(t *testing.T) {

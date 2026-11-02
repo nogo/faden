@@ -261,17 +261,13 @@ func (s *Store) SubmitTurn(_ context.Context, t faden.Turn) (faden.Turn, error) 
 	t.Status, t.Attempts, t.Error = faden.Pending, 0, ""
 	t.Created = time.Now().UTC()
 	sess, ok := s.sessions[t.Session]
-	meta := faden.Session{ID: t.Session, Backend: t.Backend, Created: t.Created}
+	recs := []record{{Type: "turn", Turn: &t}}
 	if !ok {
 		var err error
 		if sess, err = s.create(t.Session); err != nil {
 			return faden.Turn{}, err
 		}
-	} else if sess.meta.Backend != t.Backend {
-		meta.Created = sess.meta.Created
-	}
-	recs := []record{{Type: "turn", Turn: &t}}
-	if !ok || sess.meta.Backend != t.Backend {
+		meta := faden.Session{ID: t.Session, Created: t.Created}
 		recs = append([]record{{Type: "session", Session: &meta}}, recs...)
 	}
 	if err := s.write(sess, recs...); err != nil {

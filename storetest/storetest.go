@@ -43,7 +43,7 @@ func Run(t *testing.T, newStorage func(t *testing.T) Storage) {
 			t.Fatalf("submitted turn = %+v", got)
 		}
 		sess, err := s.Session(ctx, "s1")
-		if err != nil || sess.Backend != "a" {
+		if err != nil || sess.ID != "s1" {
 			t.Fatalf("session = %+v, %v", sess, err)
 		}
 	})
@@ -244,7 +244,7 @@ func Run(t *testing.T, newStorage func(t *testing.T) Storage) {
 			if _, err := s.Session(ctx, "s"); !errors.Is(err, faden.ErrNotFound) {
 				t.Fatalf("interrupted session err = %v, want ErrNotFound", err)
 			}
-			if sess, err := s.Session(ctx, "s1"); err != nil || sess.ID != "s1" || sess.Backend != "a" {
+			if sess, err := s.Session(ctx, "s1"); err != nil || sess.ID != "s1" {
 				t.Fatalf("valid session = %+v, %v", sess, err)
 			}
 			if got, err := s.Turn(ctx, "r1"); err != nil || !reflect.DeepEqual(got, want) {

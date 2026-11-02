@@ -18,17 +18,40 @@ import (
 	"github.com/nogo/faden/jsonl"
 )
 
-type checkpoint struct {
-	data json.RawMessage
-	path string
+// newAttempt submits turn to store and returns a run of it with the cursor
+// the store holds, as the runner would without catch-up.
+func newAttempt(t *testing.T, store faden.Store, turn faden.Turn) *faden.Attempt {
+	t.Helper()
+	turn.Backend = "claude"
+	if _, err := store.SubmitTurn(t.Context(), turn); err != nil {
+		t.Fatal(err)
+	}
+	a, err := faden.NewAttempt(t.Context(), store, turn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
 }
 
-func (s *checkpoint) SetCursor(_ context.Context, _, _ string, data json.RawMessage) error {
-	s.data = append(s.data[:0], data...)
-	if s.path != "" {
-		return os.WriteFile(s.path, data, 0600)
+func openStore(t *testing.T, dir string) *jsonl.Store {
+	t.Helper()
+	store, err := jsonl.Open(dir)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return nil
+	t.Cleanup(func() { store.Close() })
+	return store
+}
+
+func claudeCursor(t *testing.T, store faden.Store) cursor {
+	t.Helper()
+	sess, err := store.Session(t.Context(), "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c cursor
+	json.Unmarshal(sess.Cursors["claude"], &c)
+	return c
 }
 
 // These invented lines exercise the wire format. They are not a real-run recording.
@@ -49,21 +72,22 @@ func TestTurns(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
-	store := &checkpoint{path: filepath.Join(dir, "cursor")}
-	b, err := New(Config{Runtime: faden.Local{PIDDir: dir, Dir: dir, Env: append(os.Environ(), "INVENTED_TOKEN=environment-only")}, Store: store, Args: []string{"--permission-mode", "acceptEdits"}})
+	store := openStore(t, filepath.Join(dir, "store"))
+	b, err := New(Config{Runtime: faden.Local{PIDDir: dir, Dir: dir, Env: append(os.Environ(), "INVENTED_TOKEN=environment-only")}, Args: []string{"--permission-mode", "acceptEdits"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var events []faden.Event
-	emit := func(e faden.Event) error { events = append(events, e); return nil }
-	raw, err := b.Run(t.Context(), faden.Turn{Session: "s", Input: "Read greeting.txt"}, nil, emit)
-	if err != nil {
+	first := faden.Turn{Session: "s", RequestID: "r1", Input: "Read greeting.txt"}
+	if err := b.Run(t.Context(), first, newAttempt(t, store, first)); err != nil {
 		t.Fatal(err)
 	}
-	var c cursor
-	json.Unmarshal(raw, &c)
+	c := claudeCursor(t, store)
 	if len(c.SessionID) != 36 || c.SessionID[14] != '4' || c.LastAssistantID != "msg_answer" {
-		t.Fatalf("cursor: %s", raw)
+		t.Fatalf("cursor: %+v", c)
+	}
+	events, err := store.Events(t.Context(), "s", 0)
+	if err != nil {
+		t.Fatal(err)
 	}
 	args, _ := os.ReadFile(filepath.Join(dir, "args"))
 	if !strings.Contains(string(args), "--session-id\n"+c.SessionID) || strings.Contains(string(args), "environment-only") {
@@ -82,8 +106,8 @@ func TestTurns(t *testing.T) {
 	if !reflect.DeepEqual(kinds, want) || events[1].Action != "cat greeting.txt" || events[2].Output != "hello" {
 		t.Fatalf("events: %+v", events)
 	}
-	_, err = b.Run(t.Context(), faden.Turn{Session: "s", Input: "Continue where you left off."}, raw, emit)
-	if err != nil {
+	second := faden.Turn{Session: "s", RequestID: "r2", Input: "Continue where you left off."}
+	if err := b.Run(t.Context(), second, newAttempt(t, store, second)); err != nil {
 		t.Fatal(err)
 	}
 	args, _ = os.ReadFile(filepath.Join(dir, "args"))
@@ -94,15 +118,15 @@ func TestTurns(t *testing.T) {
 }
 
 type inspectRuntime struct {
-	store  *checkpoint
+	store  faden.Store
 	output string
 	code   int
 }
 
 func (r inspectRuntime) Stop(context.Context, string) error { return nil }
-func (r inspectRuntime) Run(_ context.Context, command faden.Command) (faden.Result, error) {
+func (r inspectRuntime) Run(ctx context.Context, command faden.Command) (faden.Result, error) {
 	w := command.Stdout
-	if len(r.store.data) == 0 {
+	if sess, err := r.store.Session(ctx, "s"); err != nil || len(sess.Cursors["claude"]) == 0 {
 		return faden.Result{}, errors.New("cursor missing before launch")
 	}
 	_, err := io.WriteString(w, r.output)
@@ -117,9 +141,10 @@ func TestCheckpointAndStreamFailures(t *testing.T) {
 		{"success", stream, 0}, {"missing result", strings.Split(stream, `{"type":"result"`)[0], 0}, {"malformed", "{\n", 0}, {"exit", stream, 2}, {"error result", `{"type":"result","is_error":true}` + "\n", 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s := &checkpoint{}
-			b, _ := New(Config{Store: s, Runtime: inspectRuntime{s, tc.output, tc.code}})
-			_, err := b.Run(t.Context(), faden.Turn{Session: "s"}, nil, func(faden.Event) error { return nil })
+			s := openStore(t, t.TempDir())
+			b, _ := New(Config{Runtime: inspectRuntime{s, tc.output, tc.code}})
+			turn := faden.Turn{Session: "s", RequestID: "r"}
+			err := b.Run(t.Context(), turn, newAttempt(t, s, turn))
 			if (err == nil) != (tc.name == "success") {
 				t.Fatalf("error: %v", err)
 			}
@@ -148,8 +173,8 @@ func waitFile(t *testing.T, path string) []byte {
 
 func runnerBackend(t *testing.T, dir string) continuationtest.Factory {
 	t.Helper()
-	return func(store faden.Store) faden.Backend {
-		b, err := New(Config{Store: store, Runtime: faden.Local{PIDDir: dir, Dir: dir}, Args: []string{"--permission-mode", "bypassPermissions"}})
+	return func() faden.Backend {
+		b, err := New(Config{Runtime: faden.Local{PIDDir: dir, Dir: dir}, Args: []string{"--permission-mode", "bypassPermissions"}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -230,7 +255,7 @@ func TestRunnerContinuesStoredTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	b, _ := New(Config{Store: store, Runtime: faden.Local{PIDDir: dir, Dir: dir}})
+	b, _ := New(Config{Runtime: faden.Local{PIDDir: dir, Dir: dir}})
 	runner, err := faden.Open(store, map[string]faden.Backend{"claude": b}, faden.Options{Budget: 64})
 	if err != nil {
 		t.Fatal(err)
@@ -281,11 +306,12 @@ func TestThreadsTokenOnlyInEnvironment(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "fixture"), []byte(stream), 0600)
 	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
 	grant := &threadGrant{}
-	b, err := New(Config{Runtime: hostRuntime{faden.Local{PIDDir: dir, Dir: dir}}, Store: &checkpoint{}, Threads: grant})
+	b, err := New(Config{Runtime: hostRuntime{faden.Local{PIDDir: dir, Dir: dir}}, Threads: grant})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := b.Run(t.Context(), faden.Turn{Session: "s", Input: "hi"}, nil, func(faden.Event) error { return nil }); err != nil {
+	turn := faden.Turn{Session: "s", RequestID: "r", Input: "hi"}
+	if err := b.Run(t.Context(), turn, newAttempt(t, openStore(t, filepath.Join(dir, "store")), turn)); err != nil {
 		t.Fatal(err)
 	}
 	token, _ := os.ReadFile(filepath.Join(dir, "token"))

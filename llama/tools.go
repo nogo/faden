@@ -41,8 +41,8 @@ func sortedTools(m map[string]Tool) []Tool {
 	return slices.SortedFunc(maps.Values(m), func(a, b Tool) int { return strings.Compare(a.Name, b.Name) })
 }
 
-// toolset is the host's tools plus the built-in ones, bound to one session.
-func (b *Backend) toolset(session, key string) map[string]Tool {
+// toolset is the host's tools plus the built-in ones, bound to one attempt.
+func (b *Backend) toolset(a *faden.Attempt, session, key string) map[string]Tool {
 	tools := map[string]Tool{}
 	for _, t := range b.cfg.Tools {
 		tools[t.Name] = t
@@ -50,7 +50,7 @@ func (b *Backend) toolset(session, key string) map[string]Tool {
 	if b.cfg.Runtime != nil {
 		tools[bashName] = bashTool(b.cfg.Runtime, key)
 	}
-	tools[handover.ThreadTool] = readThreadTool(b.cfg.Store, session)
+	tools[handover.ThreadTool] = readThreadTool(a, session)
 	return tools
 }
 
@@ -84,15 +84,23 @@ func bashTool(rt faden.Runtime, key string) Tool {
 	}
 }
 
-// readThreadTool is handover's read_thread, bound to one session.
-func readThreadTool(store Store, own string) Tool {
+// readThreadTool is handover's read_thread, bound to the attempt's session.
+func readThreadTool(a *faden.Attempt, own string) Tool {
 	return Tool{
 		Name:        handover.ThreadTool,
 		Description: handover.ThreadToolDescription,
 		Parameters:  json.RawMessage(handover.ThreadToolSchema),
 		Safe:        true,
 		Run: func(ctx context.Context, args json.RawMessage) (string, error) {
-			return handover.ReadThread(ctx, store, own, args)
+			return handover.ReadThread(ctx, attemptEvents{a}, own, args)
 		},
 	}
+}
+
+// attemptEvents serves handover.Events from an attempt. The attempt is bound
+// to one session, the only one ReadThread asks for, so session is not used.
+type attemptEvents struct{ a *faden.Attempt }
+
+func (e attemptEvents) Events(ctx context.Context, _ string, after int64) ([]faden.Event, error) {
+	return e.a.Events(ctx, after)
 }

@@ -14,8 +14,8 @@ import (
 	"github.com/nogo/faden/jsonl"
 )
 
-// Factory wires a backend to the host's store.
-type Factory func(faden.Store) faden.Backend
+// Factory makes the backend under test.
+type Factory func() faden.Backend
 
 type signalingStore struct {
 	faden.Store
@@ -49,7 +49,7 @@ func Host(t *testing.T, dir, name, input string, factory Factory) {
 	if file := os.Getenv("FADEN_KILL_AFTER_FILE"); file != "" {
 		s.file = filepath.Join(dir, file)
 	}
-	r, err := faden.Open(s, map[string]faden.Backend{name: factory(s)})
+	r, err := faden.Open(s, map[string]faden.Backend{name: factory()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func Continue(t *testing.T, dir, name string, factory Factory) []faden.Event {
 	if len(prior) > 0 {
 		after = prior[len(prior)-1].Seq
 	}
-	r, err := faden.Open(store, map[string]faden.Backend{name: factory(store)})
+	r, err := faden.Open(store, map[string]faden.Backend{name: factory()})
 	if err != nil {
 		t.Fatal(err)
 	}

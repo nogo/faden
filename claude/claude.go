@@ -24,11 +24,6 @@ import (
 // Runtime runs keyed commands and stops leftovers before continuation.
 type Runtime = faden.Runtime
 
-// Store checkpoints the cursor before the process starts and after assistant messages.
-type Store interface {
-	SetCursor(context.Context, string, string, json.RawMessage) error
-}
-
 // Threads grants a session access to read_thread. *mcp.Server implements it.
 type Threads interface {
 	Grant(session string) (token string, err error)
@@ -36,12 +31,9 @@ type Threads interface {
 	Config() []byte
 }
 
-// Config wires the backend to the host's runtime and store.
+// Config wires the backend to the host's runtime.
 type Config struct {
 	Runtime Runtime
-	Store   Store
-	// Name is the backend's key in the runner. Empty means "claude".
-	Name string
 	// Args contains host-supplied permission flags, never credentials.
 	Args []string
 	// Threads, if set, lets Claude read the session through read_thread. It
@@ -55,11 +47,8 @@ type Backend struct{ cfg Config }
 
 // New validates the host's collaborators.
 func New(cfg Config) (*Backend, error) {
-	if cfg.Runtime == nil || cfg.Store == nil {
-		return nil, errors.New("claude: runtime and store are required")
-	}
-	if cfg.Name == "" {
-		cfg.Name = "claude"
+	if cfg.Runtime == nil {
+		return nil, errors.New("claude: runtime is required")
 	}
 	cfg.Args = append([]string(nil), cfg.Args...)
 	return &Backend{cfg: cfg}, nil
@@ -78,19 +67,20 @@ type cursor struct {
 	LastAssistantID string `json:"last_assistant_id,omitempty"`
 }
 
-// Run saves the session UUID before launching Claude, then stores completed items.
-func (b *Backend) Run(ctx context.Context, t faden.Turn, raw json.RawMessage, emit func(faden.Event) error) (json.RawMessage, error) {
+// Run saves the session UUID before launching Claude, then stores completed
+// items and saves the cursor after assistant messages.
+func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error {
 	var c cursor
-	if len(raw) > 0 {
+	if raw := a.Cursor(); len(raw) > 0 {
 		if err := json.Unmarshal(raw, &c); err != nil {
-			return nil, fmt.Errorf("claude: cursor: %w", err)
+			return fmt.Errorf("claude: cursor: %w", err)
 		}
 	}
 	resume := c.SessionID != ""
 	if !resume {
 		var id [16]byte
 		if _, err := rand.Read(id[:]); err != nil {
-			return nil, fmt.Errorf("claude: UUID: %w", err)
+			return fmt.Errorf("claude: UUID: %w", err)
 		}
 		id[6] = (id[6] & 15) | 64
 		id[8] = (id[8] & 63) | 128
@@ -98,10 +88,10 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, raw json.RawMessage, em
 	}
 	save := func() error {
 		data, _ := json.Marshal(c)
-		return b.cfg.Store.SetCursor(ctx, t.Session, b.cfg.Name, data)
+		return a.SaveCursor(ctx, data)
 	}
 	if err := save(); err != nil {
-		return nil, fmt.Errorf("claude: checkpoint: %w", err)
+		return fmt.Errorf("claude: checkpoint: %w", err)
 	}
 	argv := []string{"claude", "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"}
 	if resume {
@@ -118,12 +108,12 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, raw json.RawMessage, em
 	if b.cfg.Threads != nil {
 		token, err := b.cfg.Threads.Grant(t.Session)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		defer b.cfg.Threads.Revoke(t.Session)
 		file, err := os.CreateTemp("", "faden-mcp-*.json")
 		if err != nil {
-			return nil, fmt.Errorf("claude: MCP config: %w", err)
+			return fmt.Errorf("claude: MCP config: %w", err)
 		}
 		defer os.Remove(file.Name())
 		_, err = file.Write(b.cfg.Threads.Config())
@@ -131,12 +121,12 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, raw json.RawMessage, em
 			err = cerr
 		}
 		if err != nil {
-			return nil, fmt.Errorf("claude: MCP config: %w", err)
+			return fmt.Errorf("claude: MCP config: %w", err)
 		}
 		argv = append(argv, "--mcp-config", file.Name())
 		env = []string{mcp.TokenEnv + "=" + token}
 	}
-	input, _ := json.Marshal(map[string]any{"type": "user", "message": map[string]string{"role": "user", "content": handover.Prompt(t)}})
+	input, _ := json.Marshal(map[string]any{"type": "user", "message": map[string]string{"role": "user", "content": handover.Prompt(t, a)}})
 	input = append(input, '\n')
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -153,6 +143,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, raw json.RawMessage, em
 	}()
 	scan := bufio.NewScanner(reader)
 	scan.Buffer(make([]byte, 4096), 16*1024*1024)
+	emit := func(e faden.Event) error { return a.Emit(ctx, e) }
 	ended := false
 	var parseErr error
 	for scan.Scan() {
@@ -172,20 +163,19 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, raw json.RawMessage, em
 	cancel()
 	reader.Close()
 	out := <-done
-	data, _ := json.Marshal(c)
 	if parseErr != nil {
-		return data, fmt.Errorf("claude: stream: %w", parseErr)
+		return fmt.Errorf("claude: stream: %w", parseErr)
 	}
 	if out.err != nil {
-		return data, fmt.Errorf("claude: run: %w", out.err)
+		return fmt.Errorf("claude: run: %w", out.err)
 	}
 	if out.result.ExitCode != 0 {
-		return data, fmt.Errorf("claude: exit code %d", out.result.ExitCode)
+		return fmt.Errorf("claude: exit code %d", out.result.ExitCode)
 	}
 	if !ended {
-		return data, errors.New("claude: stream ended without result")
+		return errors.New("claude: stream ended without result")
 	}
-	return data, nil
+	return nil
 }
 
 type block struct {

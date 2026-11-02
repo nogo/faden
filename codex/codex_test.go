@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/nogo/faden"
-	"github.com/nogo/faden/handover"
 	"github.com/nogo/faden/internal/continuationtest"
+	"github.com/nogo/faden/jsonl"
 )
 
 // These invented lines exercise the wire format. They are not a real-run recording.
@@ -57,22 +57,33 @@ func setup(t *testing.T, fixture string) string {
 	return dir
 }
 
-// checkpoint records what the fake codex had received when the cursor was saved.
+// checkpoint is a jsonl store that records what the fake codex had received
+// when the cursor was saved.
 type checkpoint struct {
+	*jsonl.Store
 	dir     string
-	data    json.RawMessage
 	gotThen string
-	path    string
 }
 
-func (s *checkpoint) SetCursor(_ context.Context, _, _ string, data json.RawMessage) error {
-	s.data = append(s.data[:0], data...)
+func (s *checkpoint) SetCursor(ctx context.Context, session, backend string, data json.RawMessage) error {
 	got, _ := os.ReadFile(filepath.Join(s.dir, "got"))
 	s.gotThen = string(got)
-	if s.path != "" {
-		return os.WriteFile(s.path, data, 0600)
+	return s.Store.SetCursor(ctx, session, backend, data)
+}
+
+// newAttempt submits turn to store and returns a run of it with the cursor
+// the store holds, as the runner would without catch-up.
+func newAttempt(t *testing.T, store faden.Store, turn faden.Turn) *faden.Attempt {
+	t.Helper()
+	turn.Backend = "codex"
+	if _, err := store.SubmitTurn(t.Context(), turn); err != nil {
+		t.Fatal(err)
 	}
-	return nil
+	a, err := faden.NewAttempt(t.Context(), store, turn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
 }
 
 func gotMethods(t *testing.T, dir string) []string {
@@ -91,25 +102,32 @@ func gotMethods(t *testing.T, dir string) []string {
 
 func newBackend(t *testing.T, dir string, args ...string) (*Backend, *checkpoint) {
 	t.Helper()
-	s := &checkpoint{dir: dir, path: filepath.Join(dir, "cursor")}
-	b, err := New(Config{Runtime: faden.Local{PIDDir: dir, Dir: dir}, Store: s, Args: args})
+	store, err := jsonl.Open(filepath.Join(dir, "store"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return b, s
+	t.Cleanup(func() { store.Close() })
+	b, err := New(Config{Runtime: faden.Local{PIDDir: dir, Dir: dir}, Args: args})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b, &checkpoint{Store: store, dir: dir}
 }
 
 func TestTurnThenResumeWithoutPrompt(t *testing.T) {
 	dir := setup(t, turnLines)
 	b, store := newBackend(t, dir, "-c", `sandbox_mode="read-only"`)
-	var events []faden.Event
-	emit := func(e faden.Event) error { events = append(events, e); return nil }
-	raw, err := b.Run(t.Context(), faden.Turn{Session: "s", Input: "Read greeting.txt", Model: "invented-model"}, nil, emit)
-	if err != nil {
+	first := faden.Turn{Session: "s", RequestID: "r1", Input: "Read greeting.txt", Model: "invented-model"}
+	if err := b.Run(t.Context(), first, newAttempt(t, store, first)); err != nil {
 		t.Fatal(err)
 	}
-	if string(raw) != `{"thread_id":"thr_invented"}` {
-		t.Fatalf("cursor: %s", raw)
+	sess, err := store.Session(t.Context(), "s")
+	if err != nil || string(sess.Cursors["codex"]) != `{"thread_id":"thr_invented"}` {
+		t.Fatalf("cursor: %s, %v", sess.Cursors["codex"], err)
+	}
+	events, err := store.Events(t.Context(), "s", 0)
+	if err != nil {
+		t.Fatal(err)
 	}
 	if strings.Contains(store.gotThen, "turn/start") || !strings.Contains(store.gotThen, "thread/start") {
 		t.Fatalf("cursor saved after turn/start was sent; codex had received:\n%s", store.gotThen)
@@ -141,8 +159,8 @@ func TestTurnThenResumeWithoutPrompt(t *testing.T) {
 	}
 
 	os.Remove(filepath.Join(dir, "got"))
-	events = nil
-	if _, err := b.Run(t.Context(), faden.Turn{Session: "s"}, raw, emit); err != nil {
+	second := faden.Turn{Session: "s", RequestID: "r2"}
+	if err := b.Run(t.Context(), second, newAttempt(t, store, second)); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(gotMethods(t, dir), []string{"initialize", "initialized", "thread/resume", "turn/start", ""}) {
@@ -157,13 +175,33 @@ func TestTurnThenResumeWithoutPrompt(t *testing.T) {
 	}
 }
 
+// answering is a backend that answers every turn with one message.
+type answering string
+
+func (answering) ContinuesWithoutPrompt() bool           { return true }
+func (answering) Stop(context.Context, faden.Turn) error { return nil }
+func (s answering) Run(ctx context.Context, _ faden.Turn, a *faden.Attempt) error {
+	return a.Emit(ctx, faden.Event{Kind: faden.AssistantMessage, Text: string(s)})
+}
+
 func TestHandoverPutsCatchUpBeforeRequest(t *testing.T) {
 	dir := setup(t, turnLines)
-	b, _ := newBackend(t, dir)
-	catchUp := []faden.Event{{Seq: 1, Kind: faden.UserMessage, Text: "earlier question"}, {Seq: 2, Kind: faden.AssistantMessage, Text: "earlier answer"}}
-	_, err := b.Run(t.Context(), faden.Turn{Session: "s", Input: "new request", CatchUp: catchUp}, nil, func(faden.Event) error { return nil })
+	b, store := newBackend(t, dir)
+	r, err := faden.Open(store, map[string]faden.Backend{"other": answering("earlier answer"), "codex": b})
 	if err != nil {
 		t.Fatal(err)
+	}
+	defer r.Close()
+	for _, s := range []faden.Submission{
+		{Session: "s", RequestID: "r1", Backend: "other", Input: "earlier question"},
+		{Session: "s", RequestID: "r2", Backend: "codex", Input: "new request"},
+	} {
+		if _, err := r.Submit(t.Context(), s); err != nil {
+			t.Fatal(err)
+		}
+		if turn, err := r.Wait(t.Context(), s.RequestID); err != nil || turn.Status != faden.Done {
+			t.Fatalf("turn %+v: %v", turn, err)
+		}
 	}
 	got, _ := os.ReadFile(filepath.Join(dir, "got"))
 	var turn struct {
@@ -177,8 +215,7 @@ func TestHandoverPutsCatchUpBeforeRequest(t *testing.T) {
 		}
 	}
 	text := turn.Params.Input[0].Text
-	want := handover.Prompt(faden.Turn{Input: "new request", CatchUp: catchUp})
-	if text != want || !strings.Contains(text, "earlier answer") || !strings.HasSuffix(text, "new request") {
+	if !strings.Contains(text, "[user]\nearlier question") || !strings.Contains(text, "[assistant]\nearlier answer") || !strings.HasSuffix(text, "\n\nnew request") {
 		t.Fatalf("prompt: %q", text)
 	}
 }
@@ -197,10 +234,11 @@ func TestFailures(t *testing.T) {
 				script := "#!/bin/sh\nread line\necho '{\"id\":1,\"error\":{\"message\":\"invented\"}}'\ncat >/dev/null\n"
 				os.WriteFile(filepath.Join(dir, "codex"), []byte(script), 0700)
 			}
-			b, _ := newBackend(t, dir)
+			b, store := newBackend(t, dir)
 			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 			defer cancel()
-			if _, err := b.Run(ctx, faden.Turn{Session: "s", Input: "x"}, nil, func(faden.Event) error { return nil }); err == nil {
+			turn := faden.Turn{Session: "s", RequestID: "r", Input: "x"}
+			if err := b.Run(ctx, turn, newAttempt(t, store, turn)); err == nil {
 				t.Fatal("want an error")
 			}
 		})
@@ -209,8 +247,8 @@ func TestFailures(t *testing.T) {
 
 func runnerBackend(t *testing.T, dir string) continuationtest.Factory {
 	t.Helper()
-	return func(store faden.Store) faden.Backend {
-		b, err := New(Config{Store: store, Runtime: faden.Local{PIDDir: dir, Dir: dir}, Args: []string{"-c", `sandbox_mode="danger-full-access"`, "-c", `approval_policy="never"`}})
+	return func() faden.Backend {
+		b, err := New(Config{Runtime: faden.Local{PIDDir: dir, Dir: dir}, Args: []string{"-c", `sandbox_mode="danger-full-access"`, "-c", `approval_policy="never"`}})
 		if err != nil {
 			t.Fatal(err)
 		}

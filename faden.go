@@ -42,11 +42,10 @@ const (
 	TurnEnded        Kind = "turn_ended"
 )
 
-// Session is a thread: its current backend and one resume cursor per backend
-// it has used. A cursor is opaque JSON that only its backend reads.
+// Session is a thread: one resume cursor per backend it has used. A cursor is
+// opaque JSON that only its backend reads.
 type Session struct {
 	ID      string                     `json:"id"`
-	Backend string                     `json:"backend"`
 	Cursors map[string]json.RawMessage `json:"cursors,omitempty"`
 	Created time.Time                  `json:"created"`
 }
@@ -54,19 +53,15 @@ type Session struct {
 // Turn is one user input and everything until the backend's final answer.
 // RequestID is unique per store.
 type Turn struct {
-	// CatchUp contains unseen events on a backend switch. It is derived at run time.
-	CatchUp []Event `json:"-"`
-	// HandoverBudget limits catch-up text in bytes. Zero uses 16,000.
-	HandoverBudget int       `json:"-"`
-	RequestID      string    `json:"requestId"`
-	Session        string    `json:"session"`
-	Input          string    `json:"input"`
-	Backend        string    `json:"backend"`
-	Model          string    `json:"model,omitempty"`
-	Status         Status    `json:"status"`
-	Attempts       int       `json:"attempts"`
-	Error          string    `json:"error,omitempty"`
-	Created        time.Time `json:"created"`
+	RequestID string    `json:"requestId"`
+	Session   string    `json:"session"`
+	Input     string    `json:"input"`
+	Backend   string    `json:"backend"`
+	Model     string    `json:"model,omitempty"`
+	Status    Status    `json:"status"`
+	Attempts  int       `json:"attempts"`
+	Error     string    `json:"error,omitempty"`
+	Created   time.Time `json:"created"`
 }
 
 // Event is one completed item of a turn. Native keeps the backend's own
@@ -94,8 +89,8 @@ type Event struct {
 // durable when the method returns. Missing things are reported as ErrNotFound.
 type Store interface {
 	// SubmitTurn stores t as pending and returns it, creating its session
-	// if needed and making t.Backend the session's current backend. If
-	// t.RequestID is known, it returns the existing turn and changes nothing.
+	// if needed. If t.RequestID is known, it returns the existing turn and
+	// changes nothing.
 	SubmitTurn(ctx context.Context, t Turn) (Turn, error)
 	// SaveTurn replaces the status, attempts and error of a stored turn.
 	SaveTurn(ctx context.Context, t Turn) error
@@ -125,8 +120,7 @@ type Backend interface {
 	// CLI whose host died. The runner calls it before an attempt above one.
 	Stop(ctx context.Context, t Turn) error
 	// Run runs the turn. t.Input is what to send; it is empty when the
-	// backend continues without a prompt. cursor is what the last Run of
-	// this backend returned for the session, or nil. Run calls emit for each
-	// completed item and returns the new cursor.
-	Run(ctx context.Context, t Turn, cursor json.RawMessage, emit func(Event) error) (json.RawMessage, error)
+	// backend continues without a prompt. Run emits each completed item
+	// through a, and saves its resume cursor there as soon as it has one.
+	Run(ctx context.Context, t Turn, a *Attempt) error
 }

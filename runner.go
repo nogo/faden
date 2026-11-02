@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"time"
 )
 
 const (
@@ -32,7 +31,8 @@ type Runner struct {
 
 // catchUp derives the boundary from executed turns, not the queued session backend.
 // events are the session's events before the turn runs.
-func (r *Runner) catchUp(t *Turn, events []Event, emit func(Event) error) error {
+func (r *Runner) catchUp(a *Attempt, events []Event) error {
+	t := a.turn
 	var previous string
 	var after int64
 	var marker *Event
@@ -67,13 +67,13 @@ func (r *Runner) catchUp(t *Turn, events []Event, emit func(Event) error) error 
 		if boundary, err = HandoverOf(*marker); err != nil {
 			return err
 		}
-	} else if err := emit(boundary.event()); err != nil {
+	} else if err := a.Emit(r.ctx, boundary.event()); err != nil {
 		return err
 	}
-	t.HandoverBudget = boundary.Budget
+	a.budget = boundary.Budget
 	for _, e := range events {
 		if e.Seq > boundary.After && e.RequestID != t.RequestID {
-			t.CatchUp = append(t.CatchUp, e)
+			a.catchUp = append(a.catchUp, e)
 		}
 	}
 	return nil
@@ -310,13 +310,13 @@ func (r *Runner) finish(t Turn, status Status, msg string) error {
 // It comes after any handover event, so a backend rebuilding its history
 // finds the handover before the request. It also marks which backend ran
 // the turn, which catchUp needs even when the backend emits nothing.
-func (r *Runner) recordInput(t Turn, events []Event, emit func(Event) error) error {
+func (r *Runner) recordInput(a *Attempt, events []Event) error {
 	for _, e := range events {
-		if e.RequestID == t.RequestID && e.Kind == UserMessage {
+		if e.RequestID == a.turn.RequestID && e.Kind == UserMessage {
 			return nil
 		}
 	}
-	return emit(Event{Kind: UserMessage, Text: t.Input})
+	return a.Emit(r.ctx, Event{Kind: UserMessage, Text: a.turn.Input})
 }
 
 // run runs one turn. A running turn already has its attempt raised by Open.
@@ -345,37 +345,25 @@ func (r *Runner) run(t Turn) error {
 			send.Input = ""
 		}
 	}
-	emit := func(e Event) error {
-		e.Session, e.RequestID = t.Session, t.RequestID
-		if e.Time.IsZero() {
-			e.Time = time.Now().UTC()
-		}
-		_, err := r.store.AppendEvent(r.ctx, e)
-		return err
-	}
+	a := &Attempt{store: r.store, turn: t, cursor: session.Cursors[t.Backend]}
 	// One read serves catch-up, continuation and the input check. catchUp can
 	// emit only this turn's handover marker, which neither later step reads.
 	events, err := r.store.Events(r.ctx, t.Session, 0)
 	if err != nil {
 		return fmt.Errorf("faden: turn %s: %w", t.RequestID, err)
 	}
-	if err := r.catchUp(&send, events, emit); err != nil {
+	if err := r.catchUp(a, events); err != nil {
 		return fmt.Errorf("faden: handover turn %s: %w", t.RequestID, err)
 	}
 	if t.Attempts > 1 && !backend.ContinuesWithoutPrompt() {
-		r.addOwnEvents(&send, events)
+		r.addOwnEvents(a, events)
 	}
-	if err := r.recordInput(t, events, emit); err != nil {
+	if err := r.recordInput(a, events); err != nil {
 		return fmt.Errorf("faden: record input of turn %s: %w", t.RequestID, err)
 	}
-	cursor, runErr := backend.Run(r.ctx, send, session.Cursors[t.Backend], emit)
+	runErr := backend.Run(r.ctx, send, a)
 	if r.ctx.Err() != nil {
 		return nil // closed: the turn stays running for the next Open
-	}
-	if len(cursor) > 0 {
-		if err := r.store.SetCursor(r.ctx, t.Session, t.Backend, json.RawMessage(cursor)); err != nil {
-			return fmt.Errorf("faden: turn %s: %w", t.RequestID, err)
-		}
 	}
 	if runErr != nil {
 		return r.finish(t, Failed, runErr.Error())
@@ -387,13 +375,13 @@ func (r *Runner) run(t Turn) error {
 // catch-up, so a backend that only sees a continuation prompt still learns
 // what the turn already did. A CLI's own session keeps little of a killed
 // turn. The turn's handover marker is left out: it is bookkeeping.
-func (r *Runner) addOwnEvents(t *Turn, events []Event) {
-	if t.HandoverBudget == 0 {
-		t.HandoverBudget = r.budget
+func (r *Runner) addOwnEvents(a *Attempt, events []Event) {
+	if a.budget == 0 {
+		a.budget = r.budget
 	}
 	for _, e := range events {
-		if e.RequestID == t.RequestID && e.Kind != Handover {
-			t.CatchUp = append(t.CatchUp, e)
+		if e.RequestID == a.turn.RequestID && e.Kind != Handover {
+			a.catchUp = append(a.catchUp, e)
 		}
 	}
 }

@@ -136,19 +136,13 @@ func (s *Store) SubmitTurn(ctx context.Context, t faden.Turn) (faden.Turn, error
 		}
 		t.Status, t.Attempts, t.Error = faden.Pending, 0, ""
 		t.Created = time.Now().UTC()
-		sess, err := s.Session(ctx, t.Session)
-		if errors.Is(err, faden.ErrNotFound) {
-			sess = faden.Session{ID: t.Session, Created: t.Created}
-		} else if err != nil {
-			return err
-		}
-		sess.Backend = t.Backend
-		// Encode the turn before changing the session, including for host transactions.
+		// Encode the turn before creating the session, including for host transactions.
 		data, err := json.Marshal(t)
 		if err != nil {
 			return err
 		}
-		if err := s.put(ctx, `INSERT INTO `+s.prefix+`sessions (id,data) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data`, sess, sess.ID); err != nil {
+		sess := faden.Session{ID: t.Session, Created: t.Created}
+		if err := s.put(ctx, `INSERT INTO `+s.prefix+`sessions (id,data) VALUES (?,?) ON CONFLICT(id) DO NOTHING`, sess, sess.ID); err != nil {
 			return err
 		}
 		_, err = s.tx.ExecContext(ctx, `INSERT INTO `+s.prefix+`turns (request_id,created,status,data) VALUES (?,?,?,?)`, t.RequestID, t.Created.Format("2006-01-02T15:04:05.000000000Z"), t.Status, data)

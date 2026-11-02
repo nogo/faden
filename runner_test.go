@@ -18,7 +18,7 @@ import (
 // fake is a backend with a scripted Run.
 type fake struct {
 	promptless bool
-	run        func(ctx context.Context, t faden.Turn, cursor json.RawMessage, emit func(faden.Event) error) (json.RawMessage, error)
+	run        func(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 
 	mu      sync.Mutex // guards stopped
 	stopped []string   // request ids Stop was called for
@@ -33,8 +33,8 @@ func (f *fake) Stop(_ context.Context, t faden.Turn) error {
 	return nil
 }
 
-func (f *fake) Run(ctx context.Context, t faden.Turn, c json.RawMessage, emit func(faden.Event) error) (json.RawMessage, error) {
-	return f.run(ctx, t, c, emit)
+func (f *fake) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error {
+	return f.run(ctx, t, a)
 }
 
 func openStore(t *testing.T, dir string) *jsonl.Store {
@@ -64,9 +64,9 @@ func wait(t *testing.T, r *faden.Runner, id string) faden.Turn {
 
 func TestSubmitRunsTurnAndStoresCursorAndEvents(t *testing.T) {
 	store := openStore(t, t.TempDir())
-	b := &fake{run: func(_ context.Context, turn faden.Turn, _ json.RawMessage, emit func(faden.Event) error) (json.RawMessage, error) {
-		emit(faden.Event{Kind: faden.AssistantMessage, Text: "re: " + turn.Input})
-		return json.RawMessage(`{"id":"c1"}`), nil
+	b := &fake{run: func(ctx context.Context, turn faden.Turn, a *faden.Attempt) error {
+		a.Emit(ctx, faden.Event{Kind: faden.AssistantMessage, Text: "re: " + turn.Input})
+		return a.SaveCursor(ctx, json.RawMessage(`{"id":"c1"}`))
 	}}
 	r, err := faden.Open(store, map[string]faden.Backend{"fake": b})
 	if err != nil {
@@ -92,11 +92,11 @@ func TestKnownRequestIDRunsNothing(t *testing.T) {
 	store := openStore(t, t.TempDir())
 	var mu sync.Mutex
 	runs := 0
-	b := &fake{run: func(context.Context, faden.Turn, json.RawMessage, func(faden.Event) error) (json.RawMessage, error) {
+	b := &fake{run: func(context.Context, faden.Turn, *faden.Attempt) error {
 		mu.Lock()
 		runs++
 		mu.Unlock()
-		return nil, nil
+		return nil
 	}}
 	r, _ := faden.Open(store, map[string]faden.Backend{"fake": b})
 	defer r.Close()
@@ -123,7 +123,7 @@ func TestSessionRunsOneTurnAtATimeOldestFirst(t *testing.T) {
 	var mu sync.Mutex
 	var order []string
 	active, overlap := 0, false
-	b := &fake{run: func(_ context.Context, turn faden.Turn, _ json.RawMessage, _ func(faden.Event) error) (json.RawMessage, error) {
+	b := &fake{run: func(_ context.Context, turn faden.Turn, _ *faden.Attempt) error {
 		mu.Lock()
 		active++
 		overlap = overlap || active > 1
@@ -135,7 +135,7 @@ func TestSessionRunsOneTurnAtATimeOldestFirst(t *testing.T) {
 		mu.Lock()
 		active--
 		mu.Unlock()
-		return nil, nil
+		return nil
 	}}
 	r, _ := faden.Open(store, map[string]faden.Backend{"fake": b})
 	defer r.Close()
@@ -156,8 +156,8 @@ func TestSessionRunsOneTurnAtATimeOldestFirst(t *testing.T) {
 
 func TestBackendErrorFailsTurn(t *testing.T) {
 	store := openStore(t, t.TempDir())
-	b := &fake{run: func(context.Context, faden.Turn, json.RawMessage, func(faden.Event) error) (json.RawMessage, error) {
-		return nil, context.DeadlineExceeded
+	b := &fake{run: func(context.Context, faden.Turn, *faden.Attempt) error {
+		return context.DeadlineExceeded
 	}}
 	r, _ := faden.Open(store, map[string]faden.Backend{"fake": b})
 	defer r.Close()
@@ -194,10 +194,10 @@ func TestOpenRaisesAttemptsBeforeBackendRunsAndPromptDependsOnBackend(t *testing
 			store := openStore(t, dir)
 			var stored faden.Turn
 			var sent string
-			b := &fake{promptless: c.promptless, run: func(ctx context.Context, turn faden.Turn, _ json.RawMessage, _ func(faden.Event) error) (json.RawMessage, error) {
+			b := &fake{promptless: c.promptless, run: func(ctx context.Context, turn faden.Turn, _ *faden.Attempt) error {
 				stored, _ = store.Turn(ctx, "r1")
 				sent = turn.Input
-				return nil, nil
+				return nil
 			}}
 			r, err := faden.Open(store, map[string]faden.Backend{"fake": b})
 			if err != nil {
@@ -216,9 +216,9 @@ func TestTurnFailsAfterThreeAttemptsWithoutCallingBackend(t *testing.T) {
 	dir := t.TempDir()
 	seedRunning(t, dir, 3)
 	store := openStore(t, dir)
-	b := &fake{run: func(context.Context, faden.Turn, json.RawMessage, func(faden.Event) error) (json.RawMessage, error) {
+	b := &fake{run: func(context.Context, faden.Turn, *faden.Attempt) error {
 		t.Error("backend called for a turn out of attempts")
-		return nil, nil
+		return nil
 	}}
 	r, err := faden.Open(store, map[string]faden.Backend{"fake": b})
 	if err != nil {
@@ -247,12 +247,12 @@ func TestCrashChildProcess(t *testing.T) {
 		t.Skip("helper for TestKilledTurnFinishesAfterRestart")
 	}
 	store := openStore(t, dir)
-	b := &fake{run: func(ctx context.Context, _ faden.Turn, _ json.RawMessage, emit func(faden.Event) error) (json.RawMessage, error) {
-		emit(faden.Event{Kind: faden.AssistantMessage, Text: "one"})
-		emit(faden.Event{Kind: faden.AssistantMessage, Text: "two"})
+	b := &fake{run: func(ctx context.Context, _ faden.Turn, a *faden.Attempt) error {
+		a.Emit(ctx, faden.Event{Kind: faden.AssistantMessage, Text: "one"})
+		a.Emit(ctx, faden.Event{Kind: faden.AssistantMessage, Text: "two"})
 		os.Stdout.WriteString("ready\n")
 		<-ctx.Done()
-		return nil, ctx.Err()
+		return ctx.Err()
 	}}
 	r, err := faden.Open(store, map[string]faden.Backend{"fake": b})
 	if err != nil {
@@ -288,9 +288,9 @@ func TestKilledTurnFinishesAfterRestart(t *testing.T) {
 
 	store := openStore(t, dir)
 	var sent string
-	b := &fake{run: func(_ context.Context, turn faden.Turn, _ json.RawMessage, _ func(faden.Event) error) (json.RawMessage, error) {
+	b := &fake{run: func(_ context.Context, turn faden.Turn, _ *faden.Attempt) error {
 		sent = turn.Input
-		return nil, nil
+		return nil
 	}}
 	r, err := faden.Open(store, map[string]faden.Backend{"fake": b})
 	if err != nil {
@@ -347,9 +347,11 @@ func TestContinuationCarriesTheKilledTurnsStoredEvents(t *testing.T) {
 
 			store := openStore(t, dir)
 			var turn faden.Turn
-			b := &fake{promptless: promptless, run: func(_ context.Context, got faden.Turn, _ json.RawMessage, _ func(faden.Event) error) (json.RawMessage, error) {
+			var catchUp []faden.Event
+			b := &fake{promptless: promptless, run: func(_ context.Context, got faden.Turn, a *faden.Attempt) error {
 				turn = got
-				return nil, nil
+				catchUp, _ = a.CatchUp()
+				return nil
 			}}
 			r, err := faden.Open(store, map[string]faden.Backend{"fake": b})
 			if err != nil {
@@ -358,12 +360,12 @@ func TestContinuationCarriesTheKilledTurnsStoredEvents(t *testing.T) {
 			defer r.Close()
 			wait(t, r, "r1")
 			var block string
-			for _, e := range turn.CatchUp {
+			for _, e := range catchUp {
 				block += e.Action + "|" + e.Output + "\n"
 			}
 			if promptless {
-				if len(turn.CatchUp) != 0 {
-					t.Fatalf("promptless backend got catch-up %+v", turn.CatchUp)
+				if len(catchUp) != 0 {
+					t.Fatalf("promptless backend got catch-up %+v", catchUp)
 				}
 				return
 			}

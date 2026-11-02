@@ -122,13 +122,14 @@ func clip(s string, n int) string {
 }
 
 // Prompt is what a CLI backend sends for t: its input, preceded by one
-// attributed text block of the catch-up when t has one.
-func Prompt(t faden.Turn) string {
-	if len(t.CatchUp) == 0 {
+// attributed text block of a's catch-up when it has one.
+func Prompt(t faden.Turn, a *faden.Attempt) string {
+	catchUp, budget := a.CatchUp()
+	if len(catchUp) == 0 {
 		return t.Input
 	}
 	var b strings.Builder
-	for _, item := range Select(t.CatchUp, t.Input, t.HandoverBudget) {
+	for _, item := range Select(catchUp, t.Input, budget) {
 		fmt.Fprintf(&b, "[%s]\n%s\n", item.Role, item.Text)
 	}
 	b.WriteString("\n")

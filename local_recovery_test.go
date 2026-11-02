@@ -2,7 +2,6 @@ package faden_test
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -16,13 +15,13 @@ import (
 )
 
 func localRecoveryBackend(dir string) *fake {
-	return &fake{run: func(ctx context.Context, turn faden.Turn, _ json.RawMessage, _ func(faden.Event) error) (json.RawMessage, error) {
+	return &fake{run: func(ctx context.Context, turn faden.Turn, _ *faden.Attempt) error {
 		argv := []string{"sh", "-c", `echo $$ > child; sleep 600 & echo $! > grandchild; wait`}
 		if turn.Attempts > 1 {
 			argv = []string{"true"}
 		}
 		_, err := (faden.Local{PIDDir: dir, Dir: dir}).Run(ctx, faden.Command{Key: turn.RequestID, Argv: argv})
-		return nil, err
+		return err
 	}}
 }
 

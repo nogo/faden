@@ -125,7 +125,7 @@ func TestTurnStoresAnswersCallsAndResultsInOrder(t *testing.T) {
 	rec, srv := newReplay(t, "add_call.json", "final.json")
 	store := openStore(t, t.TempDir())
 	var runs int
-	b, err := llama.New(llama.Config{URL: srv.URL, Store: store, Tools: []llama.Tool{addTool(&runs)}})
+	b, err := llama.New(llama.Config{URL: srv.URL, Tools: []llama.Tool{addTool(&runs)}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +212,7 @@ func TestStoredCallWithoutResultRunsAgainOnlyIfSafe(t *testing.T) {
 			var runs int
 			tool := addTool(&runs)
 			tool.Safe = tc.safe
-			b, _ := llama.New(llama.Config{URL: srv.URL, Store: store, Tools: []llama.Tool{tool}})
+			b, _ := llama.New(llama.Config{URL: srv.URL, Tools: []llama.Tool{tool}})
 			got := run2(t, store, b)
 			if got.Status != faden.Done || runs != tc.wantRuns {
 				t.Fatalf("turn = %+v, runs = %d", got, runs)
@@ -226,7 +226,7 @@ func TestStoredCallWithoutResultRunsAgainOnlyIfSafe(t *testing.T) {
 }
 
 // run2 opens a runner on a store that already holds a running turn.
-func run2(t *testing.T, store *jsonl.Store, b *llama.Backend) faden.Turn {
+func run2(t *testing.T, store faden.Store, b *llama.Backend) faden.Turn {
 	t.Helper()
 	r, err := faden.Open(store, map[string]faden.Backend{"llama": b})
 	if err != nil {
@@ -251,7 +251,7 @@ func TestTurnKilledBeforeFirstEventContinuesFromStoredInput(t *testing.T) {
 	store.SubmitTurn(ctx, faden.Turn{RequestID: "r1", Session: "s1", Input: "go", Backend: "llama"})
 	store.SaveTurn(ctx, faden.Turn{RequestID: "r1", Session: "s1", Input: "go", Backend: "llama", Status: faden.Running, Attempts: 1})
 	rec, srv := newReplay(t, "final.json")
-	b, _ := llama.New(llama.Config{URL: srv.URL, Store: store})
+	b, _ := llama.New(llama.Config{URL: srv.URL})
 	if got := run2(t, store, b); got.Status != faden.Done {
 		t.Fatalf("turn = %+v", got)
 	}
@@ -272,7 +272,7 @@ func TestCallNeverStoredRunsEvenIfUnsafe(t *testing.T) {
 	_, srv := newReplay(t, "final.json")
 	store := openStore(t, dir)
 	var runs int
-	b, _ := llama.New(llama.Config{URL: srv.URL, Store: store, Tools: []llama.Tool{addTool(&runs)}})
+	b, _ := llama.New(llama.Config{URL: srv.URL, Tools: []llama.Tool{addTool(&runs)}})
 	if got := run2(t, store, b); got.Status != faden.Done || runs != 1 {
 		t.Fatalf("turn = %+v, runs = %d", got, runs)
 	}
@@ -284,8 +284,8 @@ func TestReadThreadReturnsRangeAndRefusesOtherSession(t *testing.T) {
 	_, srv := newReplay(t, "final.json")
 	store := openStore(t, dir)
 	rec := &recorder{Store: store}
-	b, _ := llama.New(llama.Config{URL: srv.URL, Store: rec})
-	run2(t, store, b)
+	b, _ := llama.New(llama.Config{URL: srv.URL})
+	run2(t, rec, b)
 	events, _ := store.Events(t.Context(), "s1", 0)
 	var result string
 	for _, e := range events {
@@ -306,8 +306,8 @@ func TestReadThreadReturnsRangeAndRefusesOtherSession(t *testing.T) {
 	_, srv2 := newReplay(t, "final.json")
 	store2 := openStore(t, dir2)
 	rec2 := &recorder{Store: store2}
-	b2, _ := llama.New(llama.Config{URL: srv2.URL, Store: rec2})
-	run2(t, store2, b2)
+	b2, _ := llama.New(llama.Config{URL: srv2.URL})
+	run2(t, rec2, b2)
 	events, _ = store2.Events(t.Context(), "s1", 0)
 	for _, e := range events {
 		if e.Kind == faden.ToolResult && !strings.HasPrefix(e.Output, "error: only this conversation") {
@@ -321,7 +321,7 @@ func TestReadThreadReturnsRangeAndRefusesOtherSession(t *testing.T) {
 
 // recorder counts which sessions the store was asked for.
 type recorder struct {
-	llama.Store
+	faden.Store
 	mu       sync.Mutex
 	sessions map[string]int
 }
@@ -349,7 +349,7 @@ func TestServerErrorFailsTurn(t *testing.T) {
 	}))
 	defer srv.Close()
 	store := openStore(t, t.TempDir())
-	b, _ := llama.New(llama.Config{URL: srv.URL, Store: store})
+	b, _ := llama.New(llama.Config{URL: srv.URL})
 	got := run(t, store, b, "r1", "hi")
 	if got.Status != faden.Failed || !strings.Contains(got.Error, "503") {
 		t.Fatalf("turn = %+v", got)
@@ -372,7 +372,7 @@ func TestCrashChildProcess(t *testing.T) {
 	}
 	_, srv := newReplay(t, "bash_call.json")
 	store := openStore(t, dir)
-	b, _ := llama.New(llama.Config{URL: srv.URL, Store: store, Runtime: faden.Local{PIDDir: dir, Dir: dir}})
+	b, _ := llama.New(llama.Config{URL: srv.URL, Runtime: faden.Local{PIDDir: dir, Dir: dir}})
 	r, err := faden.Open(store, map[string]faden.Backend{"llama": b})
 	if err != nil {
 		t.Fatal(err)
@@ -416,7 +416,7 @@ func TestKilledBetweenBashCallAndResultDoesNotRunBashAgain(t *testing.T) {
 	}
 
 	rec, srv := newReplay(t, "final.json")
-	b, _ := llama.New(llama.Config{URL: srv.URL, Store: store, Runtime: faden.Local{PIDDir: dir, Dir: dir}})
+	b, _ := llama.New(llama.Config{URL: srv.URL, Runtime: faden.Local{PIDDir: dir, Dir: dir}})
 	got := run2(t, store, b)
 	if got.Status != faden.Done || got.Attempts != 2 {
 		t.Fatalf("turn = %+v", got)
@@ -442,7 +442,7 @@ func TestBashRunsThroughRuntimeInItsDirectory(t *testing.T) {
 	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
 	os.WriteFile(path, []byte(strings.Join(lines[:len(lines)-1], "\n")+"\n"), 0o600)
 	store2 := openStore(t, seed2)
-	b, _ := llama.New(llama.Config{URL: srv.URL, Store: store2, Runtime: faden.Local{PIDDir: dir, Dir: dir}})
+	b, _ := llama.New(llama.Config{URL: srv.URL, Runtime: faden.Local{PIDDir: dir, Dir: dir}})
 	run2(t, store2, b)
 	events, _ := store2.Events(t.Context(), "s1", 0)
 	for _, e := range events {
@@ -468,7 +468,7 @@ func TestLive(t *testing.T) {
 	}
 	store := openStore(t, t.TempDir())
 	var runs int
-	b, err := llama.New(llama.Config{URL: url, Model: model, Store: store, Tools: []llama.Tool{addTool(&runs)}})
+	b, err := llama.New(llama.Config{URL: url, Model: model, Tools: []llama.Tool{addTool(&runs)}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -497,7 +497,7 @@ func TestCallIDReusedInLaterTurnRunsAgain(t *testing.T) {
 	_, srv := newReplay(t, "add_call.json", "final.json", "add_call.json", "final.json")
 	store := openStore(t, t.TempDir())
 	var runs int
-	b, err := llama.New(llama.Config{URL: srv.URL, Store: store, Tools: []llama.Tool{addTool(&runs)}})
+	b, err := llama.New(llama.Config{URL: srv.URL, Tools: []llama.Tool{addTool(&runs)}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -561,7 +561,7 @@ func TestContinuedTurnWithoutCommandStopsLeftover(t *testing.T) {
 		io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"done"}}]}`)
 	}))
 	defer srv.Close()
-	backend, err := llama.New(llama.Config{URL: srv.URL, Store: store, Runtime: stopOnlyRuntime{local}})
+	backend, err := llama.New(llama.Config{URL: srv.URL, Runtime: stopOnlyRuntime{local}})
 	if err != nil {
 		t.Fatal(err)
 	}

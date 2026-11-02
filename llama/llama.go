@@ -27,21 +27,12 @@ import (
 // maxSteps bounds the model calls of one Run.
 const maxSteps = 40
 
-// Store is what the backend reads of a session: its events.
-type Store interface {
-	Events(ctx context.Context, session string, after int64) ([]faden.Event, error)
-}
-
 // Config wires a Backend.
 type Config struct {
-	// Name is the runner backend key. Empty means "llama".
-	Name string
 	// URL is the server's base address, such as http://localhost:8080.
 	URL string
 	// Model is used when a turn names none.
 	Model string
-	// Store holds the events the messages are rebuilt from.
-	Store Store
 	// Runtime runs the bash tool. Nil leaves bash out.
 	Runtime faden.Runtime
 	// Tools are the host's Go functions.
@@ -57,9 +48,6 @@ type Backend struct {
 
 // New returns a backend. It fails if a host tool reuses a built-in name.
 func New(cfg Config) (*Backend, error) {
-	if cfg.Name == "" {
-		cfg.Name = "llama"
-	}
 	if cfg.Client == nil {
 		cfg.Client = http.DefaultClient
 	}
@@ -143,8 +131,9 @@ func rebuild(events []faden.Event) (*transcript, error) {
 	return tr, nil
 }
 
-// rebuild replays native llama messages and portable context at each handover.
-func (b *Backend) rebuild(events []faden.Event) (*transcript, error) {
+// rebuildFor replays native llama messages and portable context at each
+// handover. name is this backend's key in the runner.
+func rebuildFor(name string, events []faden.Event) (*transcript, error) {
 	var native []faden.Event
 	// Before its first handover, the session belongs to that handover's From.
 	active := true
@@ -154,7 +143,7 @@ func (b *Backend) rebuild(events []faden.Event) (*transcript, error) {
 			if err != nil {
 				return nil, fmt.Errorf("llama: %w", err)
 			}
-			active = boundary.From == b.cfg.Name
+			active = boundary.From == name
 			break
 		}
 	}
@@ -164,7 +153,7 @@ func (b *Backend) rebuild(events []faden.Event) (*transcript, error) {
 			if err != nil {
 				return nil, fmt.Errorf("llama: %w", err)
 			}
-			active = boundary.To == b.cfg.Name
+			active = boundary.To == name
 			if !active {
 				continue
 			}
@@ -234,18 +223,19 @@ func (tr *transcript) needsModel() bool {
 	return false
 }
 
-// Run implements faden.Backend. It returns no cursor: the events are the
+// Run implements faden.Backend. It saves no cursor: the events are the
 // transcript.
-func (b *Backend) Run(ctx context.Context, t faden.Turn, _ json.RawMessage, emit func(faden.Event) error) (json.RawMessage, error) {
-	events, err := b.cfg.Store.Events(ctx, t.Session, 0)
+func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error {
+	events, err := a.Events(ctx, 0)
 	if err != nil {
-		return nil, fmt.Errorf("llama: read session %s: %w", t.Session, err)
+		return fmt.Errorf("llama: read session %s: %w", t.Session, err)
 	}
-	tr, err := b.rebuild(events)
+	tr, err := rebuildFor(t.Backend, events)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	tools := b.toolset(t.Session, t.RequestID)
+	emit := func(e faden.Event) error { return a.Emit(ctx, e) }
+	tools := b.toolset(a, t.Session, t.RequestID)
 	model := t.Model
 	if model == "" {
 		model = b.cfg.Model
@@ -254,20 +244,20 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, _ json.RawMessage, emit
 		if calls := tr.pending(); len(calls) > 0 {
 			for _, c := range calls {
 				if err := b.execute(ctx, tools, tr, c, emit); err != nil {
-					return nil, err
+					return err
 				}
 			}
 			continue
 		}
 		if !tr.needsModel() {
-			return nil, nil
+			return nil
 		}
 		if step++; step > maxSteps {
-			return nil, fmt.Errorf("llama: no final answer after %d model calls", maxSteps)
+			return fmt.Errorf("llama: no final answer after %d model calls", maxSteps)
 		}
 		answer, err := b.complete(ctx, model, tools, tr.messages)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		for i := range answer.ToolCalls {
 			c := &answer.ToolCalls[i]
@@ -278,10 +268,10 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, _ json.RawMessage, emit
 		}
 		native, err := json.Marshal(answer)
 		if err != nil {
-			return nil, fmt.Errorf("llama: encode answer: %w", err)
+			return fmt.Errorf("llama: encode answer: %w", err)
 		}
 		if err := emit(faden.Event{Kind: faden.AssistantMessage, Text: answer.Content, Native: native}); err != nil {
-			return nil, fmt.Errorf("llama: store answer: %w", err)
+			return fmt.Errorf("llama: store answer: %w", err)
 		}
 		tr.startMessage()
 		tr.messages = append(tr.messages, answer)

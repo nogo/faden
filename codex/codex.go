@@ -23,17 +23,9 @@ import (
 // Runtime runs keyed commands and stops leftovers before continuation.
 type Runtime = faden.Runtime
 
-// Store checkpoints the cursor as soon as Codex has answered thread/start.
-type Store interface {
-	SetCursor(context.Context, string, string, json.RawMessage) error
-}
-
-// Config wires the backend to the host's runtime and store.
+// Config wires the backend to the host's runtime.
 type Config struct {
 	Runtime Runtime
-	Store   Store
-	// Name is the backend's key in the runner. Empty means "codex".
-	Name string
 	// Args are host-supplied flags for `codex app-server`, such as
 	// `-c sandbox_mode="workspace-write"` and `-c approval_policy="never"`.
 	// They never hold credentials.
@@ -45,11 +37,8 @@ type Backend struct{ cfg Config }
 
 // New validates the host's collaborators.
 func New(cfg Config) (*Backend, error) {
-	if cfg.Runtime == nil || cfg.Store == nil {
-		return nil, errors.New("codex: runtime and store are required")
-	}
-	if cfg.Name == "" {
-		cfg.Name = "codex"
+	if cfg.Runtime == nil {
+		return nil, errors.New("codex: runtime is required")
 	}
 	cfg.Args = append([]string(nil), cfg.Args...)
 	return &Backend{cfg: cfg}, nil
@@ -90,16 +79,16 @@ type message struct {
 
 // Run starts the app-server, opens or resumes the thread, saves the thread id,
 // then starts the turn and stores completed items until the turn ends.
-func (b *Backend) Run(ctx context.Context, t faden.Turn, raw json.RawMessage, emit func(faden.Event) error) (json.RawMessage, error) {
+func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error {
 	var c cursor
-	if len(raw) > 0 {
+	if raw := a.Cursor(); len(raw) > 0 {
 		if err := json.Unmarshal(raw, &c); err != nil {
-			return nil, fmt.Errorf("codex: cursor: %w", err)
+			return fmt.Errorf("codex: cursor: %w", err)
 		}
 	}
 	items := []map[string]string{}
 	if t.Input != "" {
-		items = append(items, map[string]string{"type": "text", "text": handover.Prompt(t)})
+		items = append(items, map[string]string{"type": "text", "text": handover.Prompt(t, a)})
 	}
 	argv := append([]string{"codex", "app-server"}, b.cfg.Args...)
 
@@ -109,7 +98,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, raw json.RawMessage, em
 	// can keep Wait blocked after the child exits.
 	stdinR, stdinW, err := os.Pipe()
 	if err != nil {
-		return nil, fmt.Errorf("codex: stdin: %w", err)
+		return fmt.Errorf("codex: stdin: %w", err)
 	}
 	stdoutR, stdoutW := io.Pipe()
 	defer stdinW.Close()
@@ -134,7 +123,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, raw json.RawMessage, em
 	request := func(id int, method string, params any) error {
 		return send(map[string]any{"id": id, "method": method, "params": params})
 	}
-	finish := func(ended bool, runErr error) (json.RawMessage, error) {
+	finish := func(ended bool, runErr error) error {
 		stdinW.Close()
 		var out outcome
 		if ended && runErr == nil {
@@ -150,17 +139,16 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, raw json.RawMessage, em
 			cancel()
 			out = <-done
 		}
-		data, _ := json.Marshal(c)
 		if runErr != nil {
-			return data, fmt.Errorf("codex: %w", runErr)
+			return fmt.Errorf("codex: %w", runErr)
 		}
 		if out.err != nil {
-			return data, fmt.Errorf("codex: run: %w", out.err)
+			return fmt.Errorf("codex: run: %w", out.err)
 		}
 		if !ended {
-			return data, errors.New("codex: stream ended without turn/completed")
+			return errors.New("codex: stream ended without turn/completed")
 		}
-		return data, nil
+		return nil
 	}
 
 	if err := request(idInitialize, "initialize", map[string]any{"clientInfo": map[string]string{"name": "faden", "version": "1"}}); err != nil {
@@ -168,6 +156,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, raw json.RawMessage, em
 	}
 	scan := bufio.NewScanner(stdoutR)
 	scan.Buffer(make([]byte, 4096), 16*1024*1024)
+	emit := func(e faden.Event) error { return a.Emit(ctx, e) }
 	ended := false
 	var runErr error
 	for runErr == nil && !ended && scan.Scan() {
@@ -184,7 +173,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, raw json.RawMessage, em
 		case m.Error != nil:
 			runErr = fmt.Errorf("request %s failed: %s", m.ID, m.Error.Message)
 		default:
-			runErr = b.answer(ctx, t, &c, m, items, request, send)
+			runErr = answer(ctx, a, t, &c, m, items, request, send)
 		}
 	}
 	if runErr == nil && !ended {
@@ -198,7 +187,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, raw json.RawMessage, em
 
 // answer advances the handshake: initialize, then thread/start or
 // thread/resume, then turn/start once the thread id is stored.
-func (b *Backend) answer(ctx context.Context, t faden.Turn, c *cursor, m message, items []map[string]string, request func(int, string, any) error, send func(map[string]any) error) error {
+func answer(ctx context.Context, a *faden.Attempt, t faden.Turn, c *cursor, m message, items []map[string]string, request func(int, string, any) error, send func(map[string]any) error) error {
 	switch string(m.ID) {
 	case fmt.Sprint(idInitialize):
 		if err := send(map[string]any{"method": "initialized"}); err != nil {
@@ -224,7 +213,7 @@ func (b *Backend) answer(ctx context.Context, t faden.Turn, c *cursor, m message
 		}
 		c.ThreadID = res.Thread.ID
 		data, _ := json.Marshal(c)
-		if err := b.cfg.Store.SetCursor(ctx, t.Session, b.cfg.Name, data); err != nil {
+		if err := a.SaveCursor(ctx, data); err != nil {
 			return fmt.Errorf("checkpoint: %w", err)
 		}
 		return request(idTurn, "turn/start", map[string]any{"threadId": c.ThreadID, "input": items})

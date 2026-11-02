@@ -42,7 +42,7 @@ What it costs you: the standard library only, a store (JSONL files or your SQLit
                    store: jsonl files or the host's SQLite (*sql.DB)
 ```
 
-- A **session** is a thread. It remembers its current backend and one resume cursor per backend.
+- A **session** is a thread. It remembers one resume cursor per backend.
 - A **turn** is one input and everything until the final answer. It is stored before it runs.
 - An **event** is one completed item: user message, assistant message, tool call, tool result, handover, error.
 
@@ -84,7 +84,7 @@ The new request is never shortened. Omitted ranges are named, and the agent can 
 
 | Package | Use it for |
 |---|---|
-| `faden` | `Runner`, `Store`, `Backend`, `Runtime`, `Local` (run commands on the host) |
+| `faden` | `Runner`, `Store`, `Backend`, `Attempt`, `Runtime`, `Local` (run commands on the host) |
 | `jsonl` | A store of append-only files, one per session. One owner process (file lock). |
 | `sqlite` | A store in your own `*sql.DB`; you bring the driver. `WithTx` joins your transaction. |
 | `claude` | Claude Code through `--print` stream-json. faden creates the session id. |
@@ -109,7 +109,6 @@ defer store.Close()
 model, err := llama.New(llama.Config{
 	URL:   "http://localhost:8080",
 	Model: "qwen-27b",
-	Store: store,
 	Tools: []llama.Tool{{
 		Name: "now",
 		Safe: true, // reads only, so it may run again after a crash
@@ -144,12 +143,12 @@ To add Claude Code, give it a runtime with a durable directory for its process r
 local := faden.Local{PIDDir: "/var/lib/myapp/pids", Dir: "/srv/workspace"}
 agent, err := claude.New(claude.Config{
 	Runtime: local,
-	Store:   store,
 	Args:    []string{"--permission-mode", "acceptEdits"},
 })
 // faden.Open(store, map[string]faden.Backend{"llama": model, "claude": agent})
 ```
 
+The store goes in once, to `faden.Open`; a backend reaches it only through the `faden.Attempt` the runner passes to each run. A backend's name is its key in that map.
 A submission names its backend. Submitting the next turn of a session with another backend is a handover.
 
 ## What the host owns

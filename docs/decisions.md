@@ -10,7 +10,7 @@
 
 ### Model
 
-- **A session is a thread.** It records its current backend and one resume cursor per backend it has used.
+- ~~**A session is a thread.** It records its current backend and one resume cursor per backend it has used.~~ *Changed 2026-11-02: a session records one resume cursor per backend; nothing read its current backend. See "Decided 2026-11-02 — the attempt".*
 - **A turn** carries a session, a `requestId`, the input text, the backend and model, a status (`pending`, `running`, `done`, `failed`) and an attempt count. A session runs one turn at a time; later turns wait as `pending`, oldest first.
 - **`requestId` is unique per store.** Submitting a known `requestId` returns the existing turn and runs nothing.
 - **An event is one completed item** of a turn: user message, assistant message, tool call, tool result, error, handover, turn started, turn ended. ~~It keeps the backend's native payload beside the normalized fields (text, tool name, action, input, output), as sidenote's `harness.Event` does.~~ *Changed 2026-11-02: only llama.cpp keeps a native payload; Claude Code and Codex events carry the normalized fields (text, tool name, action, input, output). See "Decided 2026-11-02 — memory".* Streaming fragments are not stored.
@@ -26,7 +26,7 @@
 
 ### Backends
 
-- **A backend runs one turn:** it gets the turn, the resume cursor and an emit function, and returns the new cursor. faden stores what it emits.
+- ~~**A backend runs one turn:** it gets the turn, the resume cursor and an emit function, and returns the new cursor. faden stores what it emits.~~ *Changed 2026-11-02: it gets the turn and a `faden.Attempt`. See "Decided 2026-11-02 — the attempt".*
 - **Claude Code:** faden creates the session UUID and passes `--session-id` on the first turn and `--resume` on later ones, so the id is stored before the process starts. `--print` with stream-json input and output; one process per turn (as sidenote does). The cursor also keeps the last assistant message id. The host supplies the permission flags.
 - **llama.cpp:** faden's own loop against an OpenAI-compatible `/v1/chat/completions`, ported from invest's analyst. Each model answer is stored; a tool call is stored before it runs and its result after. On continue, the messages are rebuilt from the events. A stored call without a result runs again only if its tool is marked safe; otherwise its result says it was interrupted.
 - **llama.cpp tools** are the host's Go functions plus `bash` (run through the runtime, never safe to replay) and `read_thread`.
@@ -73,7 +73,7 @@ Consequence: faden's stored events are the only record of a killed Claude turn. 
 
 ## Decided 2026-11-01 — Claude runtime streaming
 
-Claude consumes stdin and emits completed items while it runs. ~~Its backend requires `RunStream`; `Local` implements it beside the existing buffered `Run`.~~ *Changed 2026-11-02: see "Decided 2026-11-01 — commands keyed by turn" (#17).* Stderr stays separate from the JSON stream. The host supplies the environment through `Local.Env`. The backend checkpoints its UUID through the host's store before launch, and checkpoints the last assistant id during the stream. A custom backend name must match its key in the runner.
+Claude consumes stdin and emits completed items while it runs. ~~Its backend requires `RunStream`; `Local` implements it beside the existing buffered `Run`.~~ *Changed 2026-11-02: see "Decided 2026-11-01 — commands keyed by turn" (#17).* Stderr stays separate from the JSON stream. The host supplies the environment through `Local.Env`. ~~The backend checkpoints its UUID through the host's store before launch, and checkpoints the last assistant id during the stream. A custom backend name must match its key in the runner.~~ *Changed 2026-11-02: it checkpoints both through `Attempt.SaveCursor`, and its name is its key in the runner; see "Decided 2026-11-02 — the attempt".*
 
 ## Decided 2026-11-01 — handover replay
 
@@ -144,3 +144,15 @@ Memory is a requirement, not a tuning step. A host keeps faden running for month
 - A handover renders a failed result as `tool_result failed …`. `read_thread` returns the field as `"failed": true`.
 
 Rejected: an exit-code field, which Claude cannot fill; `[exit N]` appended to Output, which is text a reader must parse.
+
+## Decided 2026-11-02 — the attempt
+
+**The store goes in once, to `faden.Open`.** Before, a host passed it to `faden.Open` and again to every backend's config. It also gave every backend a `Name` that had to match its key in the runner, or cursors landed under the wrong key. Nothing checked that.
+
+- **`Backend.Run(ctx, t, a *faden.Attempt) error`.** The runner makes one `Attempt` per run, bound to the turn's session and backend. It offers `Emit`, `Cursor`, `SaveCursor`, `Events` and `CatchUp`, and is a backend's only way to the store. The `claude`, `codex` and `llama` packages declare no store type and no `Name`; a backend's name is its key in the runner's map.
+- **`Attempt` is a struct, not an interface.** faden owns it, so a later method breaks no backend (Go wiki, Code Review Comments, "Interfaces"; Go blog, "Keeping your modules compatible"). `faden.NewAttempt(ctx, store, turn)` builds one without a runner, for a backend's tests; it has no catch-up.
+- **A backend saves its cursor through `SaveCursor`; `Run` returns no cursor.** Claude and Codex already saved the same cursor during the run, so the returned one was a second path to the same write.
+- **`Turn.CatchUp` and `Turn.HandoverBudget` moved to `Attempt.CatchUp()`.** They were never stored but sat on the public `Turn`, so a host saw them empty after `Wait`. `handover.Prompt(t, a)` renders them; the root package cannot, because `handover` imports it.
+- **`Session.Backend` is gone,** with the `Store` rule that wrote it on every submit. Nothing in faden read it: the handover boundary comes from executed turns. jsonl now writes a session record only when it creates the session; sqlite inserts the session row once. Old files and rows still load, because their extra field is ignored.
+
+Rejected: one constructor for all backends (`faden.New("claude", cfg)`), which needs one config whose fields mostly apply to one backend; a `faden.Open` that creates jsonl or sqlite itself, which is an import cycle; an interface for the attempt, which is easier to fake but breaks every backend when it grows.

@@ -39,7 +39,7 @@ func (r *handoverRuntime) Run(_ context.Context, command faden.Command) (faden.R
 func TestHandoverAcrossAdapters(t *testing.T) {
 	store := openStore(t, t.TempDir())
 	runtime := &handoverRuntime{}
-	cb, err := claude.New(claude.Config{Runtime: runtime, Store: store})
+	cb, err := claude.New(claude.Config{Runtime: runtime})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestHandoverAcrossAdapters(t *testing.T) {
 		io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"llama answer"}}]}`)
 	}))
 	defer server.Close()
-	lb, err := llama.New(llama.Config{URL: server.URL, Store: store})
+	lb, err := llama.New(llama.Config{URL: server.URL})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,12 +154,12 @@ func TestHandoverAcrossAdapters(t *testing.T) {
 func TestHandoverKeepsOversizedRequest(t *testing.T) {
 	store := openStore(t, t.TempDir())
 	runtime := &handoverRuntime{}
-	cb, err := claude.New(claude.Config{Runtime: runtime, Store: store})
+	cb, err := claude.New(claude.Config{Runtime: runtime})
 	if err != nil {
 		t.Fatal(err)
 	}
-	other := &fake{run: func(_ context.Context, _ faden.Turn, _ json.RawMessage, emit func(faden.Event) error) (json.RawMessage, error) {
-		return nil, emit(faden.Event{Kind: faden.UserMessage, Text: "original"})
+	other := &fake{run: func(ctx context.Context, _ faden.Turn, a *faden.Attempt) error {
+		return a.Emit(ctx, faden.Event{Kind: faden.UserMessage, Text: "original"})
 	}}
 	runner, err := faden.Open(store, map[string]faden.Backend{"other": other, "claude": cb}, faden.Options{Budget: 20})
 	if err != nil {
@@ -187,8 +187,8 @@ func TestHandoverKeepsOversizedRequest(t *testing.T) {
 
 func TestHandoverAfterSilentBackend(t *testing.T) {
 	store := openStore(t, t.TempDir())
-	silent := &fake{run: func(context.Context, faden.Turn, json.RawMessage, func(faden.Event) error) (json.RawMessage, error) {
-		return nil, nil
+	silent := &fake{run: func(context.Context, faden.Turn, *faden.Attempt) error {
+		return nil
 	}}
 	runner, err := faden.Open(store, map[string]faden.Backend{"one": silent, "two": silent})
 	if err != nil {
@@ -266,8 +266,8 @@ func runTurns(t *testing.T, store faden.Store, backends map[string]faden.Backend
 }
 
 // otherAgent answers with a payload in a foreign native format.
-var otherAgent = &fake{run: func(_ context.Context, _ faden.Turn, _ json.RawMessage, emit func(faden.Event) error) (json.RawMessage, error) {
-	return nil, emit(faden.Event{Kind: faden.AssistantMessage, Text: "other answer", Native: json.RawMessage(`{"content":[{"type":"text","text":"other answer"}]}`)})
+var otherAgent = &fake{run: func(ctx context.Context, _ faden.Turn, a *faden.Attempt) error {
+	return a.Emit(ctx, faden.Event{Kind: faden.AssistantMessage, Text: "other answer", Native: json.RawMessage(`{"content":[{"type":"text","text":"other answer"}]}`)})
 }}
 
 // A session that starts elsewhere reaches llama only as handover context:
@@ -277,7 +277,7 @@ func TestLlamaJoiningLaterSeesEarlierMessagesOnce(t *testing.T) {
 	rec := &llamaRecorder{}
 	srv := httptest.NewServer(rec)
 	defer srv.Close()
-	lb, err := llama.New(llama.Config{URL: srv.URL, Store: store})
+	lb, err := llama.New(llama.Config{URL: srv.URL})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,7 +299,7 @@ func TestLlamaReturningKeepsItsOwnFirstTurn(t *testing.T) {
 	rec := &llamaRecorder{}
 	srv := httptest.NewServer(rec)
 	defer srv.Close()
-	lb, err := llama.New(llama.Config{URL: srv.URL, Store: store})
+	lb, err := llama.New(llama.Config{URL: srv.URL})
 	if err != nil {
 		t.Fatal(err)
 	}
