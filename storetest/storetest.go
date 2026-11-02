@@ -115,10 +115,10 @@ func Run(t *testing.T, newStorage func(t *testing.T) Storage) {
 		s.SubmitTurn(ctx, turn("r1", "s1"))
 		native := json.RawMessage(`{"type":"tool_use","id":"t1"}`)
 		input := json.RawMessage(`{"cmd":"ls"}`)
-		s.AppendEvent(ctx, faden.Event{Session: "s1", RequestID: "r1", Kind: faden.ToolCall, Tool: "bash", Action: "run", Input: input, Output: "o", Native: native})
+		s.AppendEvent(ctx, faden.Event{Session: "s1", RequestID: "r1", Kind: faden.ToolCall, Tool: "bash", Action: "run", Input: input, Output: "o", Failed: true, Native: native})
 		got, _ := s.Events(ctx, "s1", 0)
 		if len(got) != 1 || string(got[0].Native) != string(native) || string(got[0].Input) != string(input) ||
-			got[0].Tool != "bash" || got[0].Action != "run" || got[0].Output != "o" {
+			got[0].Tool != "bash" || got[0].Action != "run" || got[0].Output != "o" || !got[0].Failed {
 			t.Fatalf("event = %+v", got)
 		}
 	})

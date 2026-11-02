@@ -448,8 +448,8 @@ func TestBashRunsThroughRuntimeInItsDirectory(t *testing.T) {
 	for _, e := range events {
 		if e.Kind == faden.ToolResult {
 			resolved, _ := filepath.EvalSymlinks(dir)
-			if !strings.Contains(e.Output, resolved) || !strings.Contains(e.Output, "oops") || !strings.Contains(e.Output, "[exit code 3]") {
-				t.Fatalf("bash result = %q", e.Output)
+			if !strings.Contains(e.Output, resolved) || !strings.Contains(e.Output, "oops") || !strings.Contains(e.Output, "[exit code 3]") || !e.Failed {
+				t.Fatalf("bash result = %q, failed %v", e.Output, e.Failed)
 			}
 			return
 		}

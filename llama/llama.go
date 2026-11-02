@@ -305,6 +305,7 @@ func (b *Backend) execute(ctx context.Context, tools map[string]Tool, tr *transc
 		tr.called[c.ID] = true
 	}
 	var out string
+	failed := true
 	switch {
 	case interrupted:
 		out = "interrupted: the host stopped while this call ran, and it was not run again"
@@ -316,11 +317,12 @@ func (b *Backend) execute(ctx context.Context, tools map[string]Tool, tr *transc
 		if ctx.Err() != nil {
 			return ctx.Err() // no result is stored: the next Open sees the call as interrupted
 		}
-		if err != nil {
+		failed = err != nil
+		if failed {
 			out = "error: " + err.Error()
 		}
 	}
-	if err := emit(faden.Event{Kind: faden.ToolResult, Tool: c.Function.Name, Output: out, Native: idJSON}); err != nil {
+	if err := emit(faden.Event{Kind: faden.ToolResult, Tool: c.Function.Name, Output: out, Failed: failed, Native: idJSON}); err != nil {
 		return fmt.Errorf("llama: store result %s: %w", c.ID, err)
 	}
 	tr.answered[c.ID] = true

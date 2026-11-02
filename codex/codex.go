@@ -251,6 +251,7 @@ type item struct {
 	CWD              string `json:"cwd"`
 	AggregatedOutput string `json:"aggregatedOutput"`
 	Status           string `json:"status"`
+	ExitCode         *int   `json:"exitCode"`
 	Changes          []struct {
 		Path string `json:"path"`
 	} `json:"changes"`
@@ -321,13 +322,15 @@ func emitItem(it item, emit func(faden.Event) error) error {
 		call = faden.Event{Tool: it.Server + "/" + it.Tool, Action: it.Server + "/" + it.Tool, Input: it.Arguments}
 		result.Output = string(it.Result)
 		if len(it.Error) > 0 && string(it.Error) != "null" {
-			result.Output = string(it.Error)
+			result.Output, result.Failed = string(it.Error), true
 		}
 	default:
 		return nil
 	}
 	call.Kind = faden.ToolCall
 	result.Kind, result.Tool = faden.ToolResult, call.Tool
+	result.Failed = result.Failed || it.Status == "failed" || it.Status == "declined" ||
+		it.ExitCode != nil && *it.ExitCode != 0
 	if err := emit(call); err != nil {
 		return err
 	}

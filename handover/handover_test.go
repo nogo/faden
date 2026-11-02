@@ -49,3 +49,10 @@ func TestLongToolOutputIsCutWithoutCopyingIt(t *testing.T) {
 		t.Fatalf("Select of one 300 KB output allocated %d bytes", n)
 	}
 }
+
+func TestFailedToolResultSaysSo(t *testing.T) {
+	items := handover.Select([]faden.Event{{Seq: 1, Kind: faden.ToolResult, Tool: "bash", Output: "exit 3", Failed: true}}, "", 0)
+	if len(items) != 1 || !strings.HasPrefix(items[0].Text, "tool_result failed bash") {
+		t.Fatalf("%+v", items)
+	}
+}

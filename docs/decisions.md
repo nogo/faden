@@ -133,3 +133,14 @@ Memory is a requirement, not a tuning step. A host keeps faden running for month
 - **The runner reads a session's events once per turn,** not once for each of catch-up, continuation and the input check.
 - **A handover renders only the events it selects,** and copies at most what the 240-rune cut keeps. Measured on 500 tool outputs of 100 KB: 152 MB allocated per selection before, 66 KB after.
 - **`read_thread` has one owner, `handover.ReadThread`,** used by the llama tool and the MCP server.
+
+## Decided 2026-11-02 — tool failure
+
+**A tool result says whether its tool failed (`Event.Failed`).** Without native payloads, faden's store lost the failure of a Claude tool (`is_error`) and of a Codex command (exit code). A flag, not an exit code: Claude reports no code, only the flag. Output still says why.
+
+- Claude: `is_error` on a `tool_result` block.
+- Codex: status `failed` or `declined`, a non-zero `exitCode`, or an MCP call with an error. The exit code itself is not kept. These shapes are unverified, like the rest of the Codex protocol above.
+- llama.cpp: a tool error, an unknown tool, an interrupted call, or a non-zero `bash` exit. `bash` now reports a non-zero exit as an error, so its output starts with `error: ` and still ends with `[exit code N]`.
+- A handover renders a failed result as `tool_result failed …`. `read_thread` returns the field as `"failed": true`.
+
+Rejected: an exit-code field, which Claude cannot fill; `[exit N]` appended to Output, which is text a reader must parse.

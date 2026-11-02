@@ -85,7 +85,11 @@ func text(e faden.Event) string {
 	const limit = (maxItem + 1) * utf8.UTFMax
 	var b strings.Builder
 	cut := false
-	for i, part := range [...]string{string(e.Kind), e.Tool, e.Text, e.Action, string(e.Input), e.Output} {
+	kind := string(e.Kind)
+	if e.Failed {
+		kind += " failed"
+	}
+	for i, part := range [...]string{kind, e.Tool, e.Text, e.Action, string(e.Input), e.Output} {
 		if i > 0 {
 			b.WriteByte(' ')
 		}

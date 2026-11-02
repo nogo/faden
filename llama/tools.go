@@ -54,7 +54,8 @@ func (b *Backend) toolset(session, key string) map[string]Tool {
 	return tools
 }
 
-// bashTool runs a command line through the runtime. It is never Safe.
+// bashTool runs a command line through the runtime. It is never Safe. A
+// non-zero exit is an error, so the result is marked failed.
 func bashTool(rt faden.Runtime, key string) Tool {
 	return Tool{
 		Name:        bashName,
@@ -74,6 +75,9 @@ func bashTool(rt faden.Runtime, key string) Tool {
 			out := string(res.Output)
 			if len(out) > maxToolOutput {
 				out = out[:maxToolOutput] + "\n[output cut]"
+			}
+			if res.ExitCode != 0 {
+				return "", fmt.Errorf("%s\n[exit code %d]", out, res.ExitCode)
 			}
 			return fmt.Sprintf("%s\n[exit code %d]", out, res.ExitCode), nil
 		},

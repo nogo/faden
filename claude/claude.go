@@ -194,6 +194,7 @@ type block struct {
 	Name    string          `json:"name"`
 	Input   json.RawMessage `json:"input"`
 	Content json.RawMessage `json:"content"`
+	IsError bool            `json:"is_error"`
 }
 
 func parseLine(line []byte, c *cursor, emit func(faden.Event) error) (bool, error) {
@@ -247,7 +248,7 @@ func parseLine(line []byte, c *cursor, emit func(faden.Event) error) (bool, erro
 				e.Action = v.Name
 			}
 		case "tool_result":
-			e.Kind = faden.ToolResult
+			e.Kind, e.Failed = faden.ToolResult, v.IsError
 			if json.Unmarshal(v.Content, &e.Output) != nil {
 				var blocks []block
 				if err := json.Unmarshal(v.Content, &blocks); err != nil {

@@ -309,3 +309,27 @@ func TestKilledTurnCarriesStoredToolEvents(t *testing.T) {
 		}
 	}
 }
+
+func TestFailedToolResultIsMarked(t *testing.T) {
+	cases := map[string]bool{
+		`{"type":"commandExecution","command":"false","status":"completed","aggregatedOutput":"","exitCode":1}`: true,
+		`{"type":"commandExecution","command":"true","status":"completed","aggregatedOutput":"","exitCode":0}`:  false,
+		`{"type":"commandExecution","command":"rm x","status":"declined","aggregatedOutput":""}`:                true,
+		`{"type":"fileChange","status":"failed","changes":[{"path":"a.txt"}]}`:                                  true,
+		`{"type":"mcpToolCall","server":"s","tool":"t","result":null,"error":{"message":"invented failure"}}`:   true,
+		`{"type":"mcpToolCall","server":"s","tool":"t","result":{"content":[]},"error":null}`:                   false,
+	}
+	for raw, want := range cases {
+		var it item
+		if err := json.Unmarshal([]byte(raw), &it); err != nil {
+			t.Fatal(err)
+		}
+		var got []faden.Event
+		if err := emitItem(it, func(e faden.Event) error { got = append(got, e); return nil }); err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 2 || got[0].Failed || got[1].Failed != want {
+			t.Errorf("%s: events %+v, want result failed %v", raw, got, want)
+		}
+	}
+}

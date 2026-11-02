@@ -84,7 +84,10 @@ type Event struct {
 	Action    string          `json:"action,omitempty"`
 	Input     json.RawMessage `json:"input,omitempty"`
 	Output    string          `json:"output,omitempty"`
-	Native    json.RawMessage `json:"native,omitempty"`
+	// Failed marks a tool result whose tool reported failure: an error, a
+	// non-zero exit or a declined call. Output says why.
+	Failed bool            `json:"failed,omitempty"`
+	Native json.RawMessage `json:"native,omitempty"`
 }
 
 // Store keeps sessions, turns and events. A write the caller relies on is
