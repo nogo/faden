@@ -103,7 +103,7 @@ The protocol shapes come from sidenote's adapter and t3code as described in the 
 
 ### Restart
 
-This supersedes the earlier Restart rule that assigns `Local.PIDDir/process.pid` to one sequential owner. It also supersedes the parent-death signal as a recovery aid. Backends call `Stop(ctx, t.RequestID)` before continuing an attempt above one, including turns that run no command. Each key has one command owner at a time. Hosts that share a record directory across stores must give those stores distinct request IDs.
+This supersedes the earlier Restart rule that assigns `Local.PIDDir/process.pid` to one sequential owner. It also supersedes the parent-death signal as a recovery aid. ~~Backends call `Stop(ctx, t.RequestID)` before continuing an attempt above one, including turns that run no command.~~ *Changed 2026-11-02 (b14c8e6, 6a5d6ad): `Backend` has `Stop(ctx, turn)`, and the runner calls it before an attempt above one and when `Open` gives a turn up after three attempts; a backend forwards to its runtime.* Each key has one command owner at a time. Hosts that share a record directory across stores must give those stores distinct request IDs.
 
 A record contains the process group leader's PID and its Linux start time from `/proc/<pid>/stat`. Recovery kills the group only when that identity still matches. Missing, malformed, and stale records are discarded. Local leaves the leader alive after host death so recovery can still verify it. Cancellation and normal completion kill the local group.
 
