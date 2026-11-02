@@ -20,6 +20,7 @@ import (
 
 	"github.com/nogo/faden"
 	"github.com/nogo/faden/handover"
+	"github.com/nogo/faden/internal/attach"
 	"github.com/nogo/faden/mcp"
 )
 
@@ -146,8 +147,21 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 	}
 	argv = append(argv, setup.Args...)
 	env = append(env, setup.Env...)
-	input, _ := json.Marshal(map[string]any{"type": "user", "message": map[string]string{"role": "user", "content": handover.Prompt(t, a)}})
-	input = append(input, '\n')
+	files, err := attach.Open(setup.Dir, t.Files)
+	if err != nil {
+		return fmt.Errorf("claude: %w", err)
+	}
+	defer files.Close()
+	prompt := attach.WithLines(handover.Prompt(t, a), files.Others)
+	var stdin io.Reader
+	if len(files.Images) == 0 {
+		input, _ := json.Marshal(map[string]any{"type": "user", "message": map[string]string{"role": "user", "content": prompt}})
+		stdin = bytes.NewReader(append(input, '\n'))
+	} else {
+		var stop func()
+		stdin, stop = attach.UserMessage(prompt, files.Images)
+		defer stop()
+	}
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	reader, writer := io.Pipe()
@@ -157,7 +171,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		res, err := runtime.Run(runCtx, faden.Command{Key: t.RequestID, Dir: setup.Dir, Argv: argv, Env: env, Stdin: bytes.NewReader(input), Stdout: writer})
+		res, err := runtime.Run(runCtx, faden.Command{Key: t.RequestID, Dir: setup.Dir, Argv: argv, Env: env, Stdin: stdin, Stdout: writer})
 		writer.CloseWithError(err)
 		done <- outcome{res, err}
 	}()

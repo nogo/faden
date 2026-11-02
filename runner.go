@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
+
+	"github.com/nogo/faden/internal/attach"
 )
 
 const (
@@ -128,8 +131,10 @@ type Submission struct {
 	Session   string
 	RequestID string
 	Input     string
-	Backend   string
-	Model     string
+	// Files are paths relative to the attempt's Setup.Dir, sent with every attempt.
+	Files   []string
+	Backend string
+	Model   string
 }
 
 // Setup is the host's preparation of one attempt. A backend applies what it
@@ -220,6 +225,7 @@ func (r *Runner) Submit(ctx context.Context, s Submission) (Turn, error) {
 		RequestID: s.RequestID,
 		Session:   s.Session,
 		Input:     s.Input,
+		Files:     slices.Clone(s.Files),
 		Backend:   s.Backend,
 		Model:     s.Model,
 	})
@@ -424,7 +430,7 @@ func (r *Runner) recordInput(a *Attempt, events []Event) error {
 			return nil
 		}
 	}
-	return a.Emit(r.ctx, Event{Kind: UserMessage, Text: a.turn.Input})
+	return a.Emit(r.ctx, Event{Kind: UserMessage, Text: attach.WithLines(a.turn.Input, a.turn.Files)})
 }
 
 // run runs one turn. A running turn already has its attempt raised by Open.

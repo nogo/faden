@@ -19,6 +19,7 @@ import (
 
 	"github.com/nogo/faden"
 	"github.com/nogo/faden/handover"
+	"github.com/nogo/faden/internal/attach"
 )
 
 // Runtime runs keyed commands and stops leftovers before continuation.
@@ -135,11 +136,21 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 			return fmt.Errorf("codex: cursor: %w", err)
 		}
 	}
-	items := []map[string]string{}
-	if t.Input != "" {
-		items = append(items, map[string]string{"type": "text", "text": handover.Prompt(t, a)})
-	}
 	setup := a.Setup()
+	items := []map[string]string{}
+	// A continuation without a prompt sends nothing: the thread already holds the files.
+	if t.Input != "" {
+		files, err := attach.Open(setup.Dir, t.Files)
+		if err != nil {
+			return fmt.Errorf("codex: %w", err)
+		}
+		for _, im := range files.Images {
+			items = append(items, map[string]string{"type": "localImage", "path": im.Abs})
+		}
+		files.Close()
+		text := attach.WithLines(handover.Prompt(t, a), files.Others)
+		items = append([]map[string]string{{"type": "text", "text": text}}, items...)
+	}
 	argv := append([]string{"codex", "app-server"}, b.cfg.Args...)
 	argv = append(argv, setup.Args...)
 

@@ -3,6 +3,7 @@ package codex
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -496,5 +497,52 @@ func TestCancelInterruptsBeforeRuntimeEnds(t *testing.T) {
 	case <-runtime.interrupted:
 	default:
 		t.Fatal("runtime ended without turn/interrupt")
+	}
+}
+
+func TestFilesSendImageAsLocalImageAndTextFileAsPathLine(t *testing.T) {
+	dir := setup(t, turnLines)
+	work := t.TempDir()
+	png, _ := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==")
+	os.WriteFile(filepath.Join(work, "shot.png"), png, 0600)
+	os.WriteFile(filepath.Join(work, "notes.txt"), []byte("invented notes"), 0600)
+	store, err := jsonl.Open(filepath.Join(dir, "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	b, _ := New(Config{Runtime: faden.Local{PIDDir: dir, Dir: dir}})
+	runner, err := faden.Open(store, map[string]faden.Backend{"codex": b}, faden.Options{Prepare: func(context.Context, faden.Turn) (faden.Setup, error) {
+		return faden.Setup{Dir: work}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runner.Close()
+	runner.Submit(t.Context(), faden.Submission{Session: "s", RequestID: "r1", Input: "look", Files: []string{"shot.png", "notes.txt"}, Backend: "codex"})
+	if got, err := runner.Wait(t.Context(), "r1"); err != nil || got.Status != faden.Done {
+		t.Fatalf("turn = %+v, %v", got, err)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "got"))
+	var line string
+	for l := range strings.SplitSeq(string(got), "\n") {
+		if strings.Contains(l, `"method":"turn/start"`) {
+			line = l
+		}
+	}
+	var req struct {
+		Params struct {
+			Input []map[string]string `json:"input"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal([]byte(line), &req); err != nil {
+		t.Fatalf("%v: %q", err, line)
+	}
+	in := req.Params.Input
+	if len(in) != 2 || in[0]["type"] != "text" || in[0]["text"] != "look\nAttached file: notes.txt\n" || in[1]["type"] != "localImage" || in[1]["path"] != filepath.Join(work, "shot.png") {
+		t.Fatalf("input = %+v", in)
+	}
+	if strings.Contains(line, "iVBOR") {
+		t.Fatal("image bytes were sent")
 	}
 }

@@ -57,11 +57,14 @@ type Turn struct {
 	RequestID string `json:"requestId"`
 	Session   string `json:"session"`
 	Input     string `json:"input"`
-	Backend   string `json:"backend"`
-	Model     string `json:"model,omitempty"`
-	Status    Status `json:"status"`
-	Attempts  int    `json:"attempts"`
-	Error     string `json:"error,omitempty"`
+	// Files are paths relative to the attempt's Setup.Dir. Only the paths are
+	// stored; a backend reads the bytes when it sends the turn.
+	Files    []string `json:"files,omitempty"`
+	Backend  string   `json:"backend"`
+	Model    string   `json:"model,omitempty"`
+	Status   Status   `json:"status"`
+	Attempts int      `json:"attempts"`
+	Error    string   `json:"error,omitempty"`
 	// Failure says why a failed turn failed: "" for the agent or anything else,
 	// FailureQuota or FailureUnavailable. RetryAt and LimitType hold what the
 	// backend knew of a quota stop; they are zero when unknown.

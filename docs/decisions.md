@@ -267,3 +267,15 @@ Rejected: the runner waits for the reset and retries itself.
 **Completed items retain their original size.** A watcher holds at most one decoded event, never a history slice. Thus its bound is the largest single stored event plus the fixed fragment bound above, independent of session length. There is no new limit on completed event bytes. JSONL decoding temporarily holds one encoded record as well. `TestWatcherFragmentBound` guards queue limits and reports value sizes; `TestWatchReplayLiveAndSlowReader` proves an unread watcher does not block a turn.
 
 Rejected: buffering completed events, which either blocks the turn or loses durable history; polling full history, whose memory grows with session length.
+
+## Decided 2026-11-02 — files and images with a turn (#31)
+
+**`Submission.Files` and `Turn.Files` hold paths relative to `Setup.Dir`.** The store keeps paths only. A backend reads the bytes when it sends an attempt, so a continuation sends the files again. A path outside `Dir`, or a file that cannot be opened, fails the attempt.
+
+**An image is known by its bytes, not its name.** PNG, JPEG, GIF or WebP, at most 10 MB. A larger image goes as a path line. Claude sends an image as a base64 block and Codex as `localImage`. Every other file, and every file for llama, is an `Attached file: <path>` line.
+
+**The user message event and the handover carry the path lines for every file,** including images. They never carry bytes.
+
+**Claude streams each image into its stdin as base64 from the open file.** No image is held whole in memory. `TestImageBytesAreNotHeldWhileSending` guards it.
+
+**Codex sends nothing on a continuation without a prompt:** its thread already holds the files.

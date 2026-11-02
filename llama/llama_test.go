@@ -650,3 +650,28 @@ func TestTurnUsage(t *testing.T) {
 		t.Fatalf("turn=%+v", got)
 	}
 }
+
+func TestFilesGoAsPathLinesOnly(t *testing.T) {
+	rec, srv := newReplay(t, "final.json")
+	dir, work := t.TempDir(), t.TempDir()
+	os.WriteFile(filepath.Join(work, "shot.png"), []byte("\x89PNG\r\n\x1a\ninvented"), 0600)
+	os.WriteFile(filepath.Join(work, "notes.txt"), []byte("invented notes"), 0600)
+	store := openStore(t, filepath.Join(dir, "store"))
+	b, _ := llama.New(llama.Config{URL: srv.URL + "/v1", Runtime: faden.Local{PIDDir: dir, Dir: dir}})
+	r, err := faden.Open(store, map[string]faden.Backend{"llama": b}, faden.Options{Prepare: func(context.Context, faden.Turn) (faden.Setup, error) {
+		return faden.Setup{Dir: work}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	r.Submit(t.Context(), faden.Submission{Session: "s1", RequestID: "r1", Input: "look", Files: []string{"shot.png", "notes.txt"}, Backend: "llama", Model: "test-model"})
+	if got, err := r.Wait(t.Context(), "r1"); err != nil || got.Status != faden.Done {
+		t.Fatalf("turn = %+v, %v", got, err)
+	}
+	want := "look\nAttached file: shot.png\nAttached file: notes.txt\n"
+	msgs := rec.sent()[0].Messages
+	if msgs[0].Role != "user" || msgs[0].Content != want {
+		t.Fatalf("messages = %+v", msgs)
+	}
+}

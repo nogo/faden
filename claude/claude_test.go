@@ -2,6 +2,7 @@ package claude
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -426,5 +427,59 @@ func TestPrepareSetupReachesCommandAndSystemOnlyOnFirstAttempt(t *testing.T) {
 	}
 	if len(attempts) != 2 || attempts[0] != 1 || attempts[1] != 1 {
 		t.Fatalf("Prepare attempts %v", attempts)
+	}
+}
+
+func TestFilesSendImageAsBlockAndTextFileAsPathLine(t *testing.T) {
+	dir := t.TempDir()
+	work := t.TempDir()
+	png, _ := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==")
+	for name, data := range map[string][]byte{"shot.png": png, "notes.txt": []byte("invented notes")} {
+		if err := os.WriteFile(filepath.Join(work, name), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	program := "#!/bin/sh\ncat > " + dir + "/input\ncat " + dir + "/fixture\n"
+	os.WriteFile(filepath.Join(dir, "claude"), []byte(program), 0700)
+	os.WriteFile(filepath.Join(dir, "fixture"), []byte(stream), 0600)
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	store := openStore(t, filepath.Join(dir, "store"))
+	b, err := New(Config{Runtime: faden.Local{PIDDir: dir, Dir: dir}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := faden.Open(store, map[string]faden.Backend{"claude": b}, faden.Options{Prepare: func(context.Context, faden.Turn) (faden.Setup, error) {
+		return faden.Setup{Dir: work}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if _, err := r.Submit(t.Context(), faden.Submission{Session: "s", RequestID: "r1", Input: "look", Files: []string{"shot.png", "notes.txt"}, Backend: "claude"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := r.Wait(t.Context(), "r1"); err != nil || got.Status != faden.Done {
+		t.Fatalf("turn = %+v, %v", got, err)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "input"))
+	var m struct {
+		Message struct {
+			Content []struct {
+				Type, Text string
+				Source     struct{ Media_type, Data string }
+			}
+		}
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("%v: %s", err, data)
+	}
+	c := m.Message.Content
+	sent, _ := base64.StdEncoding.DecodeString(c[len(c)-1].Source.Data)
+	if len(c) != 2 || c[0].Text != "look\nAttached file: notes.txt\n" || c[1].Source.Media_type != "image/png" || !reflect.DeepEqual(sent, png) {
+		t.Fatalf("content = %+v", c)
+	}
+	events, _ := store.Events(t.Context(), "s", 0)
+	if events[0].Text != "look\nAttached file: shot.png\nAttached file: notes.txt\n" {
+		t.Fatalf("user message = %q", events[0].Text)
 	}
 }
