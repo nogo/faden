@@ -141,11 +141,11 @@ func (l Local) run(ctx context.Context, command Command, output, stderr io.Write
 	if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 		return Result{}, fmt.Errorf("faden: local remove pid: %w", removeErr)
 	}
-	var exit *exec.ExitError
+	exit, exited := errors.AsType[*exec.ExitError](err)
 	switch {
 	case ctx.Err() != nil:
 		return Result{}, fmt.Errorf("faden: local run %s: %w", argv[0], ctx.Err())
-	case errors.As(err, &exit):
+	case exited:
 		return Result{ExitCode: exit.ExitCode()}, nil
 	case err != nil:
 		return Result{}, fmt.Errorf("faden: local run %s: %w", argv[0], err)

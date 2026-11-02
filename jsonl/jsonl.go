@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -293,9 +294,7 @@ func (s *Store) Session(_ context.Context, id string) (faden.Session, error) {
 	}
 	out := sess.meta
 	out.Cursors = make(map[string]json.RawMessage, len(sess.meta.Cursors))
-	for k, v := range sess.meta.Cursors {
-		out.Cursors[k] = v
-	}
+	maps.Copy(out.Cursors, sess.meta.Cursors)
 	return out, nil
 }
 

@@ -304,7 +304,7 @@ func TestKilledTurnCarriesStoredToolEvents(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(program), 0700); err != nil {
 		t.Fatal(err)
 	}
-	partial := strings.Split(stream, `{"type":"assistant","message":{"id":"msg_answer"`)[0]
+	partial, _, _ := strings.Cut(stream, `{"type":"assistant","message":{"id":"msg_answer"`)
 	if err := os.WriteFile(filepath.Join(dir, "fixture"), []byte(partial), 0600); err != nil {
 		t.Fatal(err)
 	}

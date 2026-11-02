@@ -79,7 +79,7 @@ func gotMethods(t *testing.T, dir string) []string {
 	t.Helper()
 	data, _ := os.ReadFile(filepath.Join(dir, "got"))
 	var methods []string
-	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(data)), "\n") {
 		var m struct {
 			Method string `json:"method"`
 		}
@@ -170,7 +170,7 @@ func TestHandoverPutsCatchUpBeforeRequest(t *testing.T) {
 			Input []struct{ Text string }
 		}
 	}
-	for _, line := range strings.Split(string(got), "\n") {
+	for line := range strings.SplitSeq(string(got), "\n") {
 		if strings.Contains(line, `"turn/start"`) {
 			json.Unmarshal([]byte(line), &turn)
 		}
@@ -276,7 +276,7 @@ func TestLiveResumeAfterKill(t *testing.T) {
 }
 
 func TestKilledTurnCarriesStoredToolEvents(t *testing.T) {
-	partial := strings.Split(turnLines, `{"method":"item/completed","params":{"item":{"type":"fileChange"`)[0]
+	partial, _, _ := strings.Cut(turnLines, `{"method":"item/completed","params":{"item":{"type":"fileChange"`)
 	dir := setup(t, partial)
 	continuationtest.KillHost(t, dir, "FADEN_CODEX_HOST")
 	if err := os.WriteFile(filepath.Join(dir, "fixture"), []byte(turnLines), 0600); err != nil {
@@ -291,7 +291,7 @@ func TestKilledTurnCarriesStoredToolEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	var prompt string
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		var m struct {
 			Method string
 			Params struct{ Input []struct{ Text string } }

@@ -236,13 +236,11 @@ func (r *Runner) kick(session string) {
 		return
 	}
 	r.active[session] = true
-	r.wg.Add(1)
-	go r.work(session)
+	r.wg.Go(func() { r.work(session) })
 }
 
 // work runs the turns of one session, oldest first, until none is left.
 func (r *Runner) work(session string) {
-	defer r.wg.Done()
 	for {
 		r.mu.Lock()
 		t, ok, err := r.next(session)

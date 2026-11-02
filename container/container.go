@@ -96,11 +96,11 @@ func (r Runtime) start(ctx context.Context, command faden.Command, output, stder
 	if stopErr := r.killLeftover(context.WithoutCancel(ctx), engine, pidFile); stopErr != nil {
 		return faden.Result{}, stopErr
 	}
-	var exit *exec.ExitError
+	exit, exited := errors.AsType[*exec.ExitError](err)
 	switch {
 	case ctx.Err() != nil:
 		return faden.Result{}, fmt.Errorf("container: run %s: %w", argv[0], ctx.Err())
-	case errors.As(err, &exit):
+	case exited:
 		return faden.Result{ExitCode: exit.ExitCode()}, nil
 	case err != nil:
 		return faden.Result{}, fmt.Errorf("container: run %s: %w", argv[0], err)

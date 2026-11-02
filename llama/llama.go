@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/nogo/faden"
@@ -206,12 +207,12 @@ func callID(e faden.Event) string {
 
 // pending returns the calls of the last assistant message that have no result.
 func (tr *transcript) pending() []toolCall {
-	for i := len(tr.messages) - 1; i >= 0; i-- {
-		if tr.messages[i].Role == "tool" {
+	for _, m := range slices.Backward(tr.messages) {
+		if m.Role == "tool" {
 			continue
 		}
 		var out []toolCall
-		for _, c := range tr.messages[i].ToolCalls {
+		for _, c := range m.ToolCalls {
 			if !tr.answered[c.ID] {
 				out = append(out, c)
 			}
@@ -224,8 +225,7 @@ func (tr *transcript) pending() []toolCall {
 // needsModel reports whether the model must answer next: the transcript does
 // not end with a final assistant message.
 func (tr *transcript) needsModel() bool {
-	for i := len(tr.messages) - 1; i >= 0; i-- {
-		m := tr.messages[i]
+	for _, m := range slices.Backward(tr.messages) {
 		if m.Role == "tool" {
 			continue
 		}
