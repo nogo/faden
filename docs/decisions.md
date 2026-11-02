@@ -279,3 +279,7 @@ Rejected: buffering completed events, which either blocks the turn or loses dura
 **Claude streams each image into its stdin as base64 from the open file.** No image is held whole in memory. `TestImageBytesAreNotHeldWhileSending` guards it.
 
 **Codex sends nothing on a continuation without a prompt:** its thread already holds the files.
+
+## Decided 2026-11-02 — context with a turn (#32)
+
+**`Submission.Context` is stored in `Turn.Context` and sent before the input on every attempt.** Context is host text for that turn, including a continuation after restart. It never enters user message events, handover selection or `read_thread`. Handover budgets count the input without context. Backends add context when sending, without storing another copy in events. Empty context keeps the existing behavior.

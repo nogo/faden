@@ -271,6 +271,14 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 	if err != nil {
 		return err
 	}
+	if t.Context != "" {
+		for i := len(tr.messages) - 1; i >= 0; i-- {
+			if tr.messages[i].Role == "user" {
+				tr.messages[i].Content = t.Context + "\n\n" + tr.messages[i].Content
+				break
+			}
+		}
+	}
 	emit := func(e faden.Event) error { return a.Emit(ctx, e) }
 	tools := b.toolset(a, t.Session, t.RequestID)
 	model := t.Model

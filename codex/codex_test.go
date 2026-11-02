@@ -319,6 +319,7 @@ func TestLiveResumeAfterKill(t *testing.T) {
 }
 
 func TestKilledTurnCarriesStoredToolEvents(t *testing.T) {
+	t.Setenv("FADEN_TEST_CONTEXT", "Vault rules for this turn.")
 	partial, _, _ := strings.Cut(turnLines, `{"method":"item/completed","params":{"item":{"type":"fileChange"`)
 	dir := setup(t, partial)
 	continuationtest.KillHost(t, dir, "FADEN_CODEX_HOST")
@@ -344,7 +345,7 @@ func TestKilledTurnCarriesStoredToolEvents(t *testing.T) {
 		}
 	}
 	end := strings.Index(prompt, "Continue where you left off.")
-	for _, text := range []string{"cat greeting.txt", "hello"} {
+	for _, text := range []string{"cat greeting.txt", "hello", "Vault rules for this turn."} {
 		at := strings.Index(prompt, text)
 		if at < 0 || end < 0 || at >= end {
 			t.Fatalf("missing %q before continuation: %s", text, prompt)
@@ -519,7 +520,7 @@ func TestFilesSendImageAsLocalImageAndTextFileAsPathLine(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer runner.Close()
-	runner.Submit(t.Context(), faden.Submission{Session: "s", RequestID: "r1", Input: "look", Files: []string{"shot.png", "notes.txt"}, Backend: "codex"})
+	runner.Submit(t.Context(), faden.Submission{Session: "s", RequestID: "r1", Input: "look", Context: "Vault rules.", Files: []string{"shot.png", "notes.txt"}, Backend: "codex"})
 	if got, err := runner.Wait(t.Context(), "r1"); err != nil || got.Status != faden.Done {
 		t.Fatalf("turn = %+v, %v", got, err)
 	}
@@ -539,10 +540,36 @@ func TestFilesSendImageAsLocalImageAndTextFileAsPathLine(t *testing.T) {
 		t.Fatalf("%v: %q", err, line)
 	}
 	in := req.Params.Input
-	if len(in) != 2 || in[0]["type"] != "text" || in[0]["text"] != "look\nAttached file: notes.txt\n" || in[1]["type"] != "localImage" || in[1]["path"] != filepath.Join(work, "shot.png") {
+	if len(in) != 2 || in[0]["type"] != "text" || in[0]["text"] != "Vault rules.\n\nlook\nAttached file: notes.txt\n" || in[1]["type"] != "localImage" || in[1]["path"] != filepath.Join(work, "shot.png") {
 		t.Fatalf("input = %+v", in)
 	}
 	if strings.Contains(line, "iVBOR") {
 		t.Fatal("image bytes were sent")
 	}
+}
+
+func TestContextIsSentWithEmptyInput(t *testing.T) {
+	dir := setup(t, turnLines)
+	b, store := newBackend(t, dir)
+	turn := faden.Turn{Session: "s", RequestID: "r1", Context: "Vault rules."}
+	if err := b.Run(t.Context(), turn, newAttempt(t, store, turn)); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "got"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for line := range strings.SplitSeq(string(data), "\n") {
+		var req struct {
+			Method string
+			Params struct{ Input []struct{ Text string } }
+		}
+		if err := json.Unmarshal([]byte(line), &req); err == nil && req.Method == "turn/start" {
+			if len(req.Params.Input) != 1 || req.Params.Input[0].Text != "Vault rules.\n\n" {
+				t.Fatalf("input = %+v", req.Params.Input)
+			}
+			return
+		}
+	}
+	t.Fatal("no turn/start request")
 }

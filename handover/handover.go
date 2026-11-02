@@ -122,10 +122,14 @@ func clip(s string, n int) string {
 }
 
 // Prompt is what a CLI backend sends for t: its input, preceded by one
-// attributed text block of a's catch-up when it has one.
+// attributed text block of a's catch-up when it has one. Context goes
+// immediately before the input and does not consume the selection budget.
 func Prompt(t faden.Turn, a *faden.Attempt) string {
 	catchUp, budget := a.CatchUp()
 	if len(catchUp) == 0 {
+		if t.Context != "" {
+			return t.Context + "\n\n" + t.Input
+		}
 		return t.Input
 	}
 	var b strings.Builder
@@ -133,6 +137,10 @@ func Prompt(t faden.Turn, a *faden.Attempt) string {
 		fmt.Fprintf(&b, "[%s]\n%s\n", item.Role, item.Text)
 	}
 	b.WriteString("\n")
+	if t.Context != "" {
+		b.WriteString(t.Context)
+		b.WriteString("\n\n")
+	}
 	b.WriteString(t.Input)
 	return b.String()
 }

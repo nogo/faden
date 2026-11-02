@@ -131,6 +131,8 @@ type Submission struct {
 	Session   string
 	RequestID string
 	Input     string
+	// Context is stored with the turn and sent before Input on every attempt.
+	Context string
 	// Files are paths relative to the attempt's Setup.Dir, sent with every attempt.
 	Files   []string
 	Backend string
@@ -225,6 +227,7 @@ func (r *Runner) Submit(ctx context.Context, s Submission) (Turn, error) {
 		RequestID: s.RequestID,
 		Session:   s.Session,
 		Input:     s.Input,
+		Context:   s.Context,
 		Files:     slices.Clone(s.Files),
 		Backend:   s.Backend,
 		Model:     s.Model,

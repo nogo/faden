@@ -327,6 +327,7 @@ func TestThreadsTokenOnlyInEnvironment(t *testing.T) {
 }
 
 func TestKilledTurnCarriesStoredToolEvents(t *testing.T) {
+	t.Setenv("FADEN_TEST_CONTEXT", "Vault rules for this turn.")
 	dir := t.TempDir()
 	program := "#!/bin/sh\ncat > input\ncat fixture\nexec sleep 120\n"
 	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(program), 0700); err != nil {
@@ -355,7 +356,7 @@ func TestKilledTurnCarriesStoredToolEvents(t *testing.T) {
 	}
 	prompt := input.Message.Content
 	end := strings.Index(prompt, "Continue where you left off.")
-	for _, text := range []string{"cat greeting.txt", "hello"} {
+	for _, text := range []string{"cat greeting.txt", "hello", "Vault rules for this turn."} {
 		at := strings.Index(prompt, text)
 		if at < 0 || end < 0 || at >= end {
 			t.Fatalf("missing %q before continuation: %s", text, prompt)
@@ -455,7 +456,7 @@ func TestFilesSendImageAsBlockAndTextFileAsPathLine(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer r.Close()
-	if _, err := r.Submit(t.Context(), faden.Submission{Session: "s", RequestID: "r1", Input: "look", Files: []string{"shot.png", "notes.txt"}, Backend: "claude"}); err != nil {
+	if _, err := r.Submit(t.Context(), faden.Submission{Session: "s", RequestID: "r1", Input: "look", Context: "Vault rules.", Files: []string{"shot.png", "notes.txt"}, Backend: "claude"}); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := r.Wait(t.Context(), "r1"); err != nil || got.Status != faden.Done {
@@ -475,7 +476,7 @@ func TestFilesSendImageAsBlockAndTextFileAsPathLine(t *testing.T) {
 	}
 	c := m.Message.Content
 	sent, _ := base64.StdEncoding.DecodeString(c[len(c)-1].Source.Data)
-	if len(c) != 2 || c[0].Text != "look\nAttached file: notes.txt\n" || c[1].Source.Media_type != "image/png" || !reflect.DeepEqual(sent, png) {
+	if len(c) != 2 || c[0].Text != "Vault rules.\n\nlook\nAttached file: notes.txt\n" || c[1].Source.Media_type != "image/png" || !reflect.DeepEqual(sent, png) {
 		t.Fatalf("content = %+v", c)
 	}
 	events, _ := store.Events(t.Context(), "s", 0)

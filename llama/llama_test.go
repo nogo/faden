@@ -675,3 +675,57 @@ func TestFilesGoAsPathLinesOnly(t *testing.T) {
 		t.Fatalf("messages = %+v", msgs)
 	}
 }
+
+func TestContextSentWithoutEnteringEventsAndSentAfterReopen(t *testing.T) {
+	for _, continuing := range []bool{false, true} {
+		t.Run(fmt.Sprint(continuing), func(t *testing.T) {
+			dir := t.TempDir()
+			store := openStore(t, dir)
+			rec, srv := newReplay(t, "add_call.json", "final.json")
+			b, err := llama.New(llama.Config{URL: srv.URL + "/v1"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			turn := faden.Turn{Session: "s1", RequestID: "r1", Backend: "llama", Input: "My question", Context: "Vault rules."}
+			if continuing {
+				if _, err := store.SubmitTurn(t.Context(), turn); err != nil {
+					t.Fatal(err)
+				}
+				turn.Status, turn.Attempts = faden.Running, 1
+				if err := store.SaveTurn(t.Context(), turn); err != nil {
+					t.Fatal(err)
+				}
+				if err := store.Close(); err != nil {
+					t.Fatal(err)
+				}
+				store = openStore(t, dir)
+			}
+			runner, err := faden.Open(store, map[string]faden.Backend{"llama": b})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer runner.Close()
+			if !continuing {
+				if _, err := runner.Submit(t.Context(), faden.Submission{Session: turn.Session, RequestID: turn.RequestID, Backend: turn.Backend, Input: turn.Input, Context: turn.Context}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := runner.Wait(t.Context(), "r1")
+			if err != nil || got.Status != faden.Done {
+				t.Fatalf("turn = %+v, %v", got, err)
+			}
+			for _, req := range rec.sent() {
+				if len(req.Messages) == 0 || req.Messages[0].Content != "Vault rules.\n\nMy question" {
+					t.Fatalf("messages = %+v", req.Messages)
+				}
+			}
+			events, err := store.Events(t.Context(), "s1", 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if events[0].Kind != faden.UserMessage || events[0].Text != "My question" {
+				t.Fatalf("user = %+v", events[0])
+			}
+		})
+	}
+}

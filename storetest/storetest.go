@@ -253,6 +253,7 @@ func Run(t *testing.T, newStorage func(t *testing.T) Storage) {
 		st := newStorage(t)
 		s := st.Open()
 		withFiles := turn("r1", "s1")
+		withFiles.Context = "Vault rules for this turn."
 		withFiles.Files = []string{"shot.png", "notes.txt"}
 		s.SubmitTurn(ctx, withFiles)
 		r1, _ := s.Turn(ctx, "r1")
@@ -267,7 +268,7 @@ func Run(t *testing.T, newStorage func(t *testing.T) Storage) {
 		s = st.Open()
 		defer s.Close()
 		got, _ := s.Turn(ctx, "r1")
-		if got.Status != faden.Running || got.Attempts != 2 || !reflect.DeepEqual(got.Files, []string{"shot.png", "notes.txt"}) || !reflect.DeepEqual(got.Usage, r1.Usage) ||
+		if got.Context != withFiles.Context || got.Status != faden.Running || got.Attempts != 2 || !reflect.DeepEqual(got.Files, []string{"shot.png", "notes.txt"}) || !reflect.DeepEqual(got.Usage, r1.Usage) ||
 			got.Failure != r1.Failure || !got.RetryAt.Equal(r1.RetryAt) || got.LimitType != r1.LimitType {
 			t.Fatalf("turn = %+v", got)
 		}

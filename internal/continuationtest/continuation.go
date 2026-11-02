@@ -54,7 +54,7 @@ func Host(t *testing.T, dir, name, input string, factory Factory) {
 		t.Fatal(err)
 	}
 	defer r.Close()
-	if _, err := r.Submit(t.Context(), faden.Submission{Session: "s", RequestID: "r", Backend: name, Input: input}); err != nil {
+	if _, err := r.Submit(t.Context(), faden.Submission{Session: "s", RequestID: "r", Backend: name, Input: input, Context: os.Getenv("FADEN_TEST_CONTEXT")}); err != nil {
 		t.Fatal(err)
 	}
 	if turn, err := r.Wait(t.Context(), "r"); err != nil || turn.Status != faden.Done {

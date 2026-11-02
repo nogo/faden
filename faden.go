@@ -57,6 +57,8 @@ type Turn struct {
 	RequestID string `json:"requestId"`
 	Session   string `json:"session"`
 	Input     string `json:"input"`
+	// Context is sent before Input on every attempt, but never enters events.
+	Context string `json:"context,omitempty"`
 	// Files are paths relative to the attempt's Setup.Dir. Only the paths are
 	// stored; a backend reads the bytes when it sends the turn.
 	Files    []string `json:"files,omitempty"`
@@ -146,7 +148,8 @@ type Backend interface {
 	// it on cancellation, before continuation and when giving up a turn.
 	Stop(ctx context.Context, t Turn) error
 	// Run runs the turn. t.Input is what to send; it is empty when the
-	// backend continues without a prompt. Run emits each completed item
+	// backend continues without a prompt. Send t.Context before the input on
+	// every attempt, without emitting it. Run emits each completed item
 	// through a, and saves its resume cursor there as soon as it has one.
 	Run(ctx context.Context, t Turn, a *Attempt) error
 }

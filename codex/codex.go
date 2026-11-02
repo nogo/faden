@@ -139,7 +139,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 	setup := a.Setup()
 	items := []map[string]string{}
 	// A continuation without a prompt sends nothing: the thread already holds the files.
-	if t.Input != "" {
+	if t.Input != "" || t.Context != "" {
 		files, err := attach.Open(setup.Dir, t.Files)
 		if err != nil {
 			return fmt.Errorf("codex: %w", err)
