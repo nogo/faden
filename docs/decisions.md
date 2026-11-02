@@ -220,3 +220,13 @@ Rejected: cutting inside each tool, which leaves host tools uncut; a limit in to
 - `FileTools` needs `Runtime`. With `FileTools` on, a host tool named `read`, `write` or `edit` is an error at `New`.
 
 Rejected: reading and writing files from Go, which touches the host's disk instead of the container's; line-numbered `read` output, which models then copy into `edit`.
+
+## Decided 2026-11-02 — turn usage (#26)
+
+**`Turn.Usage` holds totals per model, across attempts.** Backends call `Attempt.AddUsage`; the runner saves totals when an attempt returns, including failure and shutdown. Usage adds no events. A hard kill can lose usage that the backend has not returned to the runner.
+
+**Token totals include their subsets.** Input includes cache reads and writes; output includes reasoning. Claude's result reports uncached input separately, so faden adds cache reads and writes to its input total. Claude's per-model costs take precedence over `total_cost_usd`; that total is a fallback when no model breakdown exists. Codex and llama report no cost, so their cost is zero. Faden does not estimate prices.
+
+**Codex uses `thread/tokenUsage/updated`.** The installed CLI's generated schema defines `tokenUsage.total` and `tokenUsage.last` with camel-case token fields. Faden subtracts the total before the first reported call from later totals. This excludes previous turns and avoids counting repeated snapshots. The thread response supplies the model, falling back to the turn's requested model.
+
+Rejected: usage on each event, which grows with tool activity; keeping native CLI lines, which duplicates their other payloads.

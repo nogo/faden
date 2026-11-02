@@ -369,7 +369,7 @@ func (r *Runner) run(t Turn) error {
 			send.Input = ""
 		}
 	}
-	a := &Attempt{store: r.store, turn: t, cursor: session.Cursors[t.Backend]}
+	a := &Attempt{store: r.store, turn: t, cursor: session.Cursors[t.Backend], usage: append([]ModelUsage(nil), t.Usage...)}
 	if r.prepare != nil {
 		setup, err := r.prepare(r.ctx, t)
 		if err != nil {
@@ -396,8 +396,10 @@ func (r *Runner) run(t Turn) error {
 		return fmt.Errorf("faden: record input of turn %s: %w", t.RequestID, err)
 	}
 	runErr := backend.Run(r.ctx, send, a)
+	t.Usage = a.usage
 	if r.ctx.Err() != nil {
-		return nil // closed: the turn stays running for the next Open
+		// Keep reported usage for the next attempt, while leaving the turn running.
+		return r.store.SaveTurn(context.WithoutCancel(r.ctx), t)
 	}
 	if runErr != nil {
 		return r.finish(t, Failed, runErr.Error())

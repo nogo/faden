@@ -160,6 +160,15 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 	scan.Buffer(make([]byte, 4096), 16*1024*1024)
 	emit := func(e faden.Event) error { return a.Emit(ctx, e) }
 	ended := false
+	var usage faden.ModelUsage
+	var base *faden.ModelUsage
+	model := t.Model
+	defer func() {
+		if usage != (faden.ModelUsage{}) {
+			usage.Model = model
+			a.AddUsage(usage)
+		}
+	}()
 	var runErr error
 	for runErr == nil && !ended && scan.Scan() {
 		var m message
@@ -171,10 +180,30 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 		case m.Method != "" && len(m.ID) > 0:
 			runErr = send(declineOrReject(m))
 		case m.Method != "":
-			ended, runErr = notification(m, emit)
+			if m.Method == "thread/tokenUsage/updated" {
+				var total, last faden.ModelUsage
+				total, last, runErr = tokenUsage(m.Params)
+				if runErr == nil {
+					if base == nil {
+						v := subtractUsage(total, last)
+						base = &v
+					}
+					usage = subtractUsage(total, *base)
+				}
+			} else {
+				ended, runErr = notification(m, emit)
+			}
 		case m.Error != nil:
 			runErr = fmt.Errorf("request %s failed: %s", m.ID, m.Error.Message)
 		default:
+			if string(m.ID) == fmt.Sprint(idThread) {
+				var result struct {
+					Model string `json:"model"`
+				}
+				if json.Unmarshal(m.Result, &result) == nil && result.Model != "" {
+					model = result.Model
+				}
+			}
 			runErr = answer(ctx, a, t, &c, m, items, request, send)
 		}
 	}
@@ -185,6 +214,34 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 		}
 	}
 	return finish(ended, runErr)
+}
+
+// Subtract the thread total before this attempt to exclude earlier turns.
+func subtractUsage(total, base faden.ModelUsage) faden.ModelUsage {
+	return faden.ModelUsage{InputTokens: total.InputTokens - base.InputTokens, OutputTokens: total.OutputTokens - base.OutputTokens, CacheReadTokens: total.CacheReadTokens - base.CacheReadTokens}
+}
+
+type usageBreakdown struct {
+	Input  int64 `json:"inputTokens"`
+	Cached int64 `json:"cachedInputTokens"`
+	Output int64 `json:"outputTokens"`
+}
+
+func (u usageBreakdown) usage() faden.ModelUsage {
+	return faden.ModelUsage{InputTokens: u.Input, CacheReadTokens: u.Cached, OutputTokens: u.Output}
+}
+
+func tokenUsage(raw json.RawMessage) (faden.ModelUsage, faden.ModelUsage, error) {
+	var p struct {
+		TokenUsage struct {
+			Last  usageBreakdown `json:"last"`
+			Total usageBreakdown `json:"total"`
+		} `json:"tokenUsage"`
+	}
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return faden.ModelUsage{}, faden.ModelUsage{}, err
+	}
+	return p.TokenUsage.Total.usage(), p.TokenUsage.Last.usage(), nil
 }
 
 // answer advances the handshake: initialize, then thread/start or

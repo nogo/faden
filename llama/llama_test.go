@@ -632,3 +632,21 @@ func TestPrepareSystemComesFirstUnstoredAndBashUsesDirAndEnv(t *testing.T) {
 		t.Fatalf("bash result %q, want dir %s and env", result, want)
 	}
 }
+
+func TestTurnUsage(t *testing.T) {
+	replay := &replay{answers: []string{
+		`{"model":"invented-model","usage":{"prompt_tokens":40,"completion_tokens":8},"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"one","type":"function","function":{"name":"add","arguments":"{\"a\":2,\"b\":3}"}}]}}]}`,
+		`{"model":"invented-model","usage":{"prompt_tokens":50,"completion_tokens":9},"choices":[{"message":{"role":"assistant","content":"Five."}}]}`,
+	}}
+	srv := httptest.NewServer(replay)
+	defer srv.Close()
+	runs := 0
+	b, err := llama.New(llama.Config{URL: srv.URL + "/v1", Tools: []llama.Tool{addTool(&runs)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := run(t, openStore(t, t.TempDir()), b, "usage", "Add two and three.")
+	if got.Status != faden.Done || len(got.Usage) != 1 || got.Usage[0] != (faden.ModelUsage{Model: "invented-model", InputTokens: 90, OutputTokens: 17}) {
+		t.Fatalf("turn=%+v", got)
+	}
+}

@@ -448,3 +448,40 @@ func TestSetupIsNotStored(t *testing.T) {
 		}
 	}
 }
+
+func TestUsageSumsAcrossAttemptsAndFailure(t *testing.T) {
+	store := openStore(t, t.TempDir())
+	first := make(chan struct{})
+	b := &fake{run: func(ctx context.Context, turn faden.Turn, a *faden.Attempt) error {
+		a.AddUsage(faden.ModelUsage{Model: "invented", InputTokens: 10, OutputTokens: 2, CacheReadTokens: 3, CacheWriteTokens: 1, CostUSD: 0.125})
+		a.AddUsage(faden.ModelUsage{Model: "other", InputTokens: 1})
+		if turn.Attempts == 1 {
+			close(first)
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		a.AddUsage(faden.ModelUsage{Model: "invented", InputTokens: 5})
+		return errors.New("invented failure")
+	}}
+	r, err := faden.Open(store, map[string]faden.Backend{"fake": b})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Submit(t.Context(), sub("s1", "usage", "hello")); err != nil {
+		t.Fatal(err)
+	}
+	<-first
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r, err = faden.Open(store, map[string]faden.Backend{"fake": b})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	got := wait(t, r, "usage")
+	want := []faden.ModelUsage{{Model: "invented", InputTokens: 25, OutputTokens: 4, CacheReadTokens: 6, CacheWriteTokens: 2, CostUSD: 0.25}, {Model: "other", InputTokens: 2}}
+	if got.Status != faden.Failed || got.Attempts != 2 || !reflect.DeepEqual(got.Usage, want) {
+		t.Fatalf("turn=%+v want usage=%+v", got, want)
+	}
+}

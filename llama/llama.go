@@ -111,6 +111,12 @@ type message struct {
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 }
 
+// completion carries response metadata without putting it in the transcript.
+type completion struct {
+	message message
+	usage   faden.ModelUsage
+}
+
 type toolCall struct {
 	ID       string `json:"id"`
 	Type     string `json:"type"`
@@ -285,10 +291,15 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 		if step++; step > b.cfg.MaxSteps {
 			return fmt.Errorf("llama: no final answer after %d model calls", b.cfg.MaxSteps)
 		}
-		answer, err := b.complete(ctx, model, tools, system(a.Setup().System, tr.messages))
+		response, err := b.complete(ctx, model, tools, system(a.Setup().System, tr.messages))
 		if err != nil {
 			return err
 		}
+		if response.usage.Model == "" {
+			response.usage.Model = model
+		}
+		a.AddUsage(response.usage)
+		answer := response.message
 		for i := range answer.ToolCalls {
 			c := &answer.ToolCalls[i]
 			if c.ID == "" {
@@ -361,7 +372,7 @@ func (b *Backend) execute(ctx context.Context, tools map[string]Tool, tr *transc
 }
 
 // complete asks the server for the next assistant message.
-func (b *Backend) complete(ctx context.Context, model string, tools map[string]Tool, msgs []message) (answer message, callErr error) {
+func (b *Backend) complete(ctx context.Context, model string, tools map[string]Tool, msgs []message) (answer completion, callErr error) {
 	defer func() {
 		if callErr != nil && b.cfg.Key != "" && strings.Contains(callErr.Error(), b.cfg.Key) {
 			callErr = errors.New(strings.ReplaceAll(callErr.Error(), b.cfg.Key, "[redacted]"))
@@ -387,11 +398,11 @@ func (b *Backend) complete(ctx context.Context, model string, tools map[string]T
 		MaxTokens int       `json:"max_tokens,omitempty"`
 	}{model, msgs, defs, b.cfg.MaxTokens})
 	if err != nil {
-		return message{}, fmt.Errorf("llama: encode request: %w", err)
+		return completion{}, fmt.Errorf("llama: encode request: %w", err)
 	}
 	for attempt := 0; ; attempt++ {
 		if err := ctx.Err(); err != nil {
-			return message{}, err
+			return completion{}, err
 		}
 		m, retry, delay, err := b.call(ctx, body)
 		if err == nil || !retry || attempt == 3 {
@@ -402,17 +413,17 @@ func (b *Backend) complete(ctx context.Context, model string, tools map[string]T
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return message{}, ctx.Err()
+			return completion{}, ctx.Err()
 		case <-timer.C:
 		}
 	}
 }
 
 // call makes one request. Failed requests never reach the event store.
-func (b *Backend) call(ctx context.Context, body []byte) (message, bool, time.Duration, error) {
+func (b *Backend) call(ctx context.Context, body []byte) (completion, bool, time.Duration, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(b.cfg.URL, "/")+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return message{}, false, 0, fmt.Errorf("llama: request: %w", err)
+		return completion{}, false, 0, fmt.Errorf("llama: request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if b.cfg.Key != "" {
@@ -420,29 +431,35 @@ func (b *Backend) call(ctx context.Context, body []byte) (message, bool, time.Du
 	}
 	resp, err := b.cfg.Client.Do(req)
 	if err != nil {
-		return message{}, true, 0, fmt.Errorf("llama: call model: %w", err)
+		return completion{}, true, 0, fmt.Errorf("llama: call model: %w", err)
 	}
 	defer resp.Body.Close()
 	retry := resp.StatusCode == 429 || resp.StatusCode >= 500 && resp.StatusCode <= 599
 	delay := retryAfter(resp.Header.Get("Retry-After"), time.Now())
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if err != nil {
-		return message{}, retry || resp.StatusCode == http.StatusOK, delay, fmt.Errorf("llama: read answer: %w", err)
+		return completion{}, retry || resp.StatusCode == http.StatusOK, delay, fmt.Errorf("llama: read answer: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return message{}, retry, delay, fmt.Errorf("llama: model answered %d", resp.StatusCode)
+		return completion{}, retry, delay, fmt.Errorf("llama: model answered %d", resp.StatusCode)
 	}
 	var parsed struct {
+		Usage struct {
+			Prompt     int64 `json:"prompt_tokens"`
+			Completion int64 `json:"completion_tokens"`
+		} `json:"usage"`
+		Model   string `json:"model"`
 		Choices []struct {
 			Message message `json:"message"`
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(raw, &parsed); err != nil || len(parsed.Choices) == 0 {
-		return message{}, false, 0, errors.New("llama: unreadable answer")
+		return completion{}, false, 0, errors.New("llama: unreadable answer")
 	}
 	m := parsed.Choices[0].Message
+	u := faden.ModelUsage{Model: parsed.Model, InputTokens: parsed.Usage.Prompt, OutputTokens: parsed.Usage.Completion}
 	m.Role = "assistant"
-	return m, false, 0, nil
+	return completion{message: m, usage: u}, false, 0, nil
 }
 
 func retryAfter(value string, now time.Time) time.Duration {

@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/nogo/faden"
@@ -154,7 +155,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 	ended := false
 	var parseErr error
 	for scan.Scan() {
-		end, err := parseLine(scan.Bytes(), &c, emit)
+		end, err := parseLine(scan.Bytes(), &c, emit, a.AddUsage, t.Model)
 		if err == nil && c.LastAssistantID != "" {
 			err = save()
 		}
@@ -194,12 +195,20 @@ type block struct {
 	IsError bool            `json:"is_error"`
 }
 
-func parseLine(line []byte, c *cursor, emit func(faden.Event) error) (bool, error) {
+func parseLine(line []byte, c *cursor, emit func(faden.Event) error, add func(faden.ModelUsage), model string) (bool, error) {
 	var msg struct {
-		Type    string `json:"type"`
-		IsError bool   `json:"is_error"`
-		Result  string `json:"result"`
-		Message struct {
+		ModelUsage map[string]struct {
+			Input  int64   `json:"inputTokens"`
+			Output int64   `json:"outputTokens"`
+			Read   int64   `json:"cacheReadInputTokens"`
+			Write  int64   `json:"cacheCreationInputTokens"`
+			Cost   float64 `json:"costUSD"`
+		} `json:"modelUsage"`
+		TotalCost float64 `json:"total_cost_usd"`
+		Type      string  `json:"type"`
+		IsError   bool    `json:"is_error"`
+		Result    string  `json:"result"`
+		Message   struct {
 			ID      string  `json:"id"`
 			Content []block `json:"content"`
 		} `json:"message"`
@@ -208,6 +217,18 @@ func parseLine(line []byte, c *cursor, emit func(faden.Event) error) (bool, erro
 		return false, err
 	}
 	if msg.Type == "result" {
+		models := make([]string, 0, len(msg.ModelUsage))
+		for model := range msg.ModelUsage {
+			models = append(models, model)
+		}
+		sort.Strings(models)
+		for _, model := range models {
+			u := msg.ModelUsage[model]
+			add(faden.ModelUsage{Model: model, InputTokens: u.Input + u.Read + u.Write, OutputTokens: u.Output, CacheReadTokens: u.Read, CacheWriteTokens: u.Write, CostUSD: u.Cost})
+		}
+		if len(models) == 0 && msg.TotalCost != 0 {
+			add(faden.ModelUsage{Model: model, CostUSD: msg.TotalCost})
+		}
 		if err := emit(faden.Event{Kind: faden.TurnEnded, Text: msg.Result}); err != nil {
 			return false, err
 		}

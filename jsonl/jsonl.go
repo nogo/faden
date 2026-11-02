@@ -253,6 +253,7 @@ func (s *Store) SubmitTurn(_ context.Context, t faden.Turn) (faden.Turn, error) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if known, ok := s.turns[t.RequestID]; ok {
+		known.Usage = slices.Clone(known.Usage)
 		return known, nil
 	}
 	if t.RequestID == "" || t.Session == "" {
@@ -260,6 +261,7 @@ func (s *Store) SubmitTurn(_ context.Context, t faden.Turn) (faden.Turn, error) 
 	}
 	t.Status, t.Attempts, t.Error = faden.Pending, 0, ""
 	t.Created = time.Now().UTC()
+	t.Usage = slices.Clone(t.Usage)
 	sess, ok := s.sessions[t.Session]
 	recs := []record{{Type: "turn", Turn: &t}}
 	if !ok {
@@ -277,6 +279,7 @@ func (s *Store) SubmitTurn(_ context.Context, t faden.Turn) (faden.Turn, error) 
 		return faden.Turn{}, err
 	}
 	s.sessions[t.Session] = sess
+	t.Usage = slices.Clone(t.Usage)
 	return t, nil
 }
 
@@ -289,6 +292,7 @@ func (s *Store) SaveTurn(_ context.Context, t faden.Turn) error {
 		return fmt.Errorf("jsonl: save turn %s: %w", t.RequestID, faden.ErrNotFound)
 	}
 	known.Status, known.Attempts, known.Error = t.Status, t.Attempts, t.Error
+	known.Usage = slices.Clone(t.Usage)
 	return s.write(s.sessions[known.Session], record{Type: "turn", Turn: &known})
 }
 
@@ -300,6 +304,7 @@ func (s *Store) Turn(_ context.Context, requestID string) (faden.Turn, error) {
 	if !ok {
 		return faden.Turn{}, fmt.Errorf("jsonl: turn %s: %w", requestID, faden.ErrNotFound)
 	}
+	t.Usage = slices.Clone(t.Usage)
 	return t, nil
 }
 
@@ -311,6 +316,7 @@ func (s *Store) Unfinished(_ context.Context) ([]faden.Turn, error) {
 	for _, sess := range s.sessions {
 		for _, id := range sess.turns {
 			if t := s.turns[id]; !t.Status.Final() {
+				t.Usage = slices.Clone(t.Usage)
 				out = append(out, t)
 			}
 		}

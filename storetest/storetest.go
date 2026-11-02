@@ -219,6 +219,7 @@ func Run(t *testing.T, newStorage func(t *testing.T) Storage) {
 		s.SubmitTurn(ctx, turn("r1", "s1"))
 		r1, _ := s.Turn(ctx, "r1")
 		r1.Status, r1.Attempts = faden.Running, 2
+		r1.Usage = []faden.ModelUsage{{Model: "invented", InputTokens: 90, OutputTokens: 12, CacheReadTokens: 30, CacheWriteTokens: 20, CostUSD: 0.125}}
 		s.SaveTurn(ctx, r1)
 		s.AppendEvent(ctx, faden.Event{Session: "s1", RequestID: "r1", Kind: faden.UserMessage, Text: "hi"})
 		s.SetCursor(ctx, "s1", "a", json.RawMessage(`{"n":1}`))
@@ -227,7 +228,7 @@ func Run(t *testing.T, newStorage func(t *testing.T) Storage) {
 		s = st.Open()
 		defer s.Close()
 		got, _ := s.Turn(ctx, "r1")
-		if got.Status != faden.Running || got.Attempts != 2 {
+		if got.Status != faden.Running || got.Attempts != 2 || !reflect.DeepEqual(got.Usage, r1.Usage) {
 			t.Fatalf("turn = %+v", got)
 		}
 		events, _ := s.Events(ctx, "s1", 0)

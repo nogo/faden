@@ -53,15 +53,28 @@ type Session struct {
 // Turn is one user input and everything until the backend's final answer.
 // RequestID is unique per store.
 type Turn struct {
-	RequestID string    `json:"requestId"`
-	Session   string    `json:"session"`
-	Input     string    `json:"input"`
-	Backend   string    `json:"backend"`
-	Model     string    `json:"model,omitempty"`
-	Status    Status    `json:"status"`
-	Attempts  int       `json:"attempts"`
-	Error     string    `json:"error,omitempty"`
-	Created   time.Time `json:"created"`
+	RequestID string       `json:"requestId"`
+	Session   string       `json:"session"`
+	Input     string       `json:"input"`
+	Backend   string       `json:"backend"`
+	Model     string       `json:"model,omitempty"`
+	Status    Status       `json:"status"`
+	Attempts  int          `json:"attempts"`
+	Error     string       `json:"error,omitempty"`
+	Created   time.Time    `json:"created"`
+	Usage     []ModelUsage `json:"usage,omitempty"`
+}
+
+// ModelUsage is the tokens and cost reported by a backend for one model.
+// InputTokens includes cache reads and writes; OutputTokens includes reasoning tokens.
+// CostUSD is zero when the backend reports no cost.
+type ModelUsage struct {
+	Model            string  `json:"model"`
+	InputTokens      int64   `json:"inputTokens"`
+	OutputTokens     int64   `json:"outputTokens"`
+	CacheReadTokens  int64   `json:"cacheReadTokens"`
+	CacheWriteTokens int64   `json:"cacheWriteTokens"`
+	CostUSD          float64 `json:"costUSD"`
 }
 
 // Event is one completed item of a turn. Native keeps the backend's own
@@ -92,7 +105,7 @@ type Store interface {
 	// if needed. If t.RequestID is known, it returns the existing turn and
 	// changes nothing.
 	SubmitTurn(ctx context.Context, t Turn) (Turn, error)
-	// SaveTurn replaces the status, attempts and error of a stored turn.
+	// SaveTurn replaces the status, attempts, error and usage of a stored turn.
 	SaveTurn(ctx context.Context, t Turn) error
 	// Turn returns the turn with this request id.
 	Turn(ctx context.Context, requestID string) (Turn, error)

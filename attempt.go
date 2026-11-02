@@ -18,6 +18,24 @@ type Attempt struct {
 	catchUp []Event
 	budget  int
 	setup   Setup
+	usage   []ModelUsage
+}
+
+// AddUsage adds reported usage to this attempt. Call it from Run's goroutine.
+// The runner saves totals per model with the turn after Run returns.
+func (a *Attempt) AddUsage(u ModelUsage) {
+	for i := range a.usage {
+		v := &a.usage[i]
+		if v.Model == u.Model {
+			v.InputTokens += u.InputTokens
+			v.OutputTokens += u.OutputTokens
+			v.CacheReadTokens += u.CacheReadTokens
+			v.CacheWriteTokens += u.CacheWriteTokens
+			v.CostUSD += u.CostUSD
+			return
+		}
+	}
+	a.usage = append(a.usage, u)
 }
 
 // NewAttempt binds a run of t to store, with the cursor the store holds for

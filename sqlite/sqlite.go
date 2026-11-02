@@ -172,6 +172,7 @@ func (s *Store) SaveTurn(ctx context.Context, t faden.Turn) error {
 			return err
 		}
 		known.Status, known.Attempts, known.Error = t.Status, t.Attempts, t.Error
+		known.Usage = t.Usage
 		return s.put(ctx, `UPDATE `+s.prefix+`turns SET status=?2,data=?3 WHERE request_id=?1`, known, t.RequestID, t.Status)
 	})
 	if err != nil {
