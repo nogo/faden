@@ -119,3 +119,7 @@ Local records live in the host's durable `PIDDir`; container records live in `/t
 This supersedes the Codex decision to continue without a prompt. Codex requests a continuation prompt from the runner, which includes the killed turn's stored events. Its native transcript can omit tool results after a kill, as measured above. An empty input remains supported by the backend protocol.
 
 A continuation without a handover uses the host's `Options.Budget`. A continuation with a handover keeps the budget recorded in that handover. Both select stored events through the same byte budget rules.
+
+## Measured 2026-11-02 — continuation with stored events
+
+**With the killed turn's stored events in the continuation, both CLIs know what they already did.** `FADEN_LIVE=1 go test -v ./claude ./codex -run TestLiveResumeAfterKill` (claude 2.1.316, codex-cli 0.166.0, through the runner and a `jsonl` store since #18) answered `FIRST_FILE_KNOWN` on both. Claude did not write `first.txt` again; Codex kept it and continued with the sleep. One run each. Before #14 both answered `FIRST_FILE_UNKNOWN`.
