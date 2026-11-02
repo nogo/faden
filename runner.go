@@ -152,6 +152,13 @@ func Open(store Store, backends map[string]Backend, options ...Options) (*Runner
 		if t.Attempts >= maxAttempts {
 			t.Status = Failed
 			t.Error = fmt.Sprintf("faden: turn stopped after %d attempts; send a new turn", t.Attempts)
+			// A given-up turn never continues, so nothing else would stop
+			// what its last attempt left running.
+			if b, ok := backends[t.Backend]; ok {
+				if err := b.Stop(ctx, t); err != nil {
+					t.Error += fmt.Sprintf("; its leftover could not be stopped: %v", err)
+				}
+			}
 		} else {
 			t.Attempts++
 		}

@@ -19,11 +19,19 @@ import (
 type fake struct {
 	promptless bool
 	run        func(ctx context.Context, t faden.Turn, cursor json.RawMessage, emit func(faden.Event) error) (json.RawMessage, error)
+
+	mu      sync.Mutex // guards stopped
+	stopped []string   // request ids Stop was called for
 }
 
 func (f *fake) ContinuesWithoutPrompt() bool { return f.promptless }
 
-func (f *fake) Stop(context.Context, faden.Turn) error { return nil }
+func (f *fake) Stop(_ context.Context, t faden.Turn) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopped = append(f.stopped, t.RequestID)
+	return nil
+}
 
 func (f *fake) Run(ctx context.Context, t faden.Turn, c json.RawMessage, emit func(faden.Event) error) (json.RawMessage, error) {
 	return f.run(ctx, t, c, emit)
@@ -220,6 +228,12 @@ func TestTurnFailsAfterThreeAttemptsWithoutCallingBackend(t *testing.T) {
 	got := wait(t, r, "r1")
 	if got.Status != faden.Failed || got.Attempts != 3 || !strings.Contains(got.Error, "send a new turn") {
 		t.Fatalf("turn = %+v", got)
+	}
+	// Given up, the turn never continues, so its leftover is stopped now.
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.stopped) != 1 || b.stopped[0] != "r1" {
+		t.Fatalf("stopped = %v, want [r1]", b.stopped)
 	}
 }
 
