@@ -106,7 +106,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 	if err := save(); err != nil {
 		return fmt.Errorf("claude: checkpoint: %w", err)
 	}
-	argv := []string{"claude", "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"}
+	argv := []string{"claude", "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages"}
 	if resume {
 		argv = append(argv, "--resume", c.SessionID)
 	} else {
@@ -167,6 +167,10 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 	ended := false
 	var parseErr error
 	for scan.Scan() {
+		if err := emitFragment(scan.Bytes(), a); err != nil {
+			parseErr = err
+			break
+		}
 		end, err := parseLine(scan.Bytes(), &c, emit, a.AddUsage, t.Model)
 		if err == nil && c.LastAssistantID != "" {
 			err = save()
@@ -328,4 +332,32 @@ func (c *cursor) failure(result string) error {
 		return &faden.UnavailableError{Reason: result}
 	}
 	return errors.New("Claude reported an unsuccessful turn")
+}
+
+// emitFragment handles partial messages without passing them to storage.
+func emitFragment(line []byte, a *faden.Attempt) error {
+	var m struct {
+		Type  string `json:"type"`
+		Event struct {
+			Type  string `json:"type"`
+			Delta struct {
+				Type     string `json:"type"`
+				Text     string `json:"text"`
+				Thinking string `json:"thinking"`
+			} `json:"delta"`
+		} `json:"event"`
+	}
+	if err := json.Unmarshal(line, &m); err != nil {
+		return err
+	}
+	if m.Type != "stream_event" || m.Event.Type != "content_block_delta" {
+		return nil
+	}
+	switch m.Event.Delta.Type {
+	case "text_delta":
+		a.EmitFragment(faden.Fragment{Kind: faden.FragmentText, Text: m.Event.Delta.Text})
+	case "thinking_delta":
+		a.EmitFragment(faden.Fragment{Kind: faden.FragmentThinking, Text: m.Event.Delta.Thinking})
+	}
+	return nil
 }

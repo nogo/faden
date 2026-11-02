@@ -125,6 +125,9 @@ type Store interface {
 	AppendEvent(ctx context.Context, e Event) (Event, error)
 	// Events returns the events of a session with Seq above after, in order.
 	Events(ctx context.Context, session string, after int64) ([]Event, error)
+	// NextEvent returns the first event above after, or nil when caught up.
+	// It reads at most one event, regardless of session length.
+	NextEvent(ctx context.Context, session string, after int64) (*Event, error)
 	// SetCursor stores the resume cursor of one backend of a session.
 	SetCursor(ctx context.Context, session, backend string, cursor json.RawMessage) error
 	// Close releases the store.

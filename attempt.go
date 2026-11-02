@@ -12,6 +12,7 @@ import (
 // one per run and passes it to Backend.Run, so a backend needs no store and
 // no name of its own.
 type Attempt struct {
+	runner  *Runner
 	store   Store
 	turn    Turn
 	cursor  json.RawMessage
@@ -74,7 +75,14 @@ func (a *Attempt) Emit(ctx context.Context, e Event) error {
 	if e.Time.IsZero() {
 		e.Time = time.Now().UTC()
 	}
+	if a.runner != nil {
+		a.runner.mu.Lock()
+		defer a.runner.mu.Unlock()
+	}
 	_, err := a.store.AppendEvent(ctx, e)
+	if err == nil && a.runner != nil {
+		a.runner.notify(e.Session)
+	}
 	return err
 }
 
@@ -90,3 +98,12 @@ func (a *Attempt) Events(ctx context.Context, after int64) ([]Event, error) {
 // that needs a prompt, they also hold what earlier attempts of the turn
 // stored. handover.Prompt renders them.
 func (a *Attempt) CatchUp() ([]Event, int) { return a.catchUp, a.budget }
+
+// EmitFragment sends a best-effort fragment to current watchers. Oversized
+// fragments (over 4096 bytes) are dropped. The attempt supplies RequestID.
+func (a *Attempt) EmitFragment(f Fragment) {
+	if a.runner != nil {
+		f.RequestID = a.turn.RequestID
+		a.runner.fragment(a.turn.Session, f)
+	}
+}

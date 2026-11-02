@@ -275,3 +275,22 @@ func (s *Store) SetCursor(ctx context.Context, id, backend string, cursor json.R
 }
 
 var _ faden.Store = (*Store)(nil)
+
+// NextEvent implements faden.Store.
+func (s *Store) NextEvent(ctx context.Context, id string, after int64) (*faden.Event, error) {
+	if _, err := s.Session(ctx, id); err != nil {
+		return nil, err
+	}
+	rows, err := s.rows(ctx, `SELECT data FROM `+s.prefix+`events WHERE session=? AND seq>? ORDER BY seq LIMIT 1`, id, max(after, 0))
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: next event: %w", err)
+	}
+	events, err := readRows[faden.Event](rows)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: next event: %w", err)
+	}
+	if len(events) == 0 {
+		return nil, nil
+	}
+	return &events[0], nil
+}

@@ -296,7 +296,15 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 		case m.Method != "" && len(m.ID) > 0:
 			runErr = send(declineOrReject(m))
 		case m.Method != "":
-			if m.Method == "thread/tokenUsage/updated" {
+			if m.Method == "item/agentMessage/delta" {
+				var p struct {
+					Delta string `json:"delta"`
+				}
+				runErr = json.Unmarshal(m.Params, &p)
+				if runErr == nil {
+					a.EmitFragment(faden.Fragment{Kind: faden.FragmentText, Text: p.Delta})
+				}
+			} else if m.Method == "thread/tokenUsage/updated" {
 				var total, last faden.ModelUsage
 				total, last, runErr = tokenUsage(m.Params)
 				if runErr == nil {

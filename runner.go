@@ -23,6 +23,8 @@ type Runner struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
+	watchWG  sync.WaitGroup
+	watchers map[*watcher]struct{} // guarded by mu
 
 	mu       sync.Mutex // guards active, turns, changed, draining and fatal
 	turns    map[string]context.CancelFunc
@@ -246,6 +248,7 @@ func (r *Runner) Cancel(ctx context.Context, requestID string) (Turn, error) {
 		r.mu.Unlock()
 		return Turn{}, fmt.Errorf("faden: cancel event %s: %w", requestID, err)
 	}
+	r.notify(t.Session)
 	running := t.Status == Running
 	t.Status = Cancelled
 	if err := r.store.SaveTurn(ctx, t); err != nil {
@@ -296,8 +299,11 @@ func (r *Runner) Wait(ctx context.Context, requestID string) (Turn, error) {
 // Close stops the running turns and waits for them. A stopped turn stays
 // running, so the next Open continues it.
 func (r *Runner) Close() error {
+	r.mu.Lock()
 	r.cancel()
+	r.mu.Unlock()
 	r.wg.Wait()
+	r.watchWG.Wait()
 	return nil
 }
 
@@ -462,7 +468,7 @@ func (r *Runner) run(t Turn) error {
 			send.Input = ""
 		}
 	}
-	a := &Attempt{store: r.store, turn: t, cursor: session.Cursors[t.Backend], usage: append([]ModelUsage(nil), t.Usage...)}
+	a := &Attempt{runner: r, store: r.store, turn: t, cursor: session.Cursors[t.Backend], usage: append([]ModelUsage(nil), t.Usage...)}
 	if r.prepare != nil {
 		setup, err := r.prepare(ctx, t)
 		if err != nil {

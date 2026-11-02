@@ -118,6 +118,18 @@ func Run(t *testing.T, newStorage func(t *testing.T) Storage) {
 		if other.Seq != 1 {
 			t.Fatalf("first event of s2 has seq %d, want 1", other.Seq)
 		}
+		for after := int64(0); after < 4; after++ {
+			e, err := s.NextEvent(ctx, "s1", after)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after < 3 && (e == nil || e.Seq != after+1) {
+				t.Fatalf("next after %d: %+v", after, e)
+			}
+			if after == 3 && e != nil {
+				t.Fatalf("unexpected next: %+v", e)
+			}
+		}
 		got, err := s.Events(ctx, "s1", 0)
 		if err != nil {
 			t.Fatal(err)

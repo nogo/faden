@@ -422,3 +422,36 @@ func (s *Store) Close() error {
 }
 
 var _ faden.Store = (*Store)(nil)
+
+// NextEvent implements faden.Store.
+func (s *Store) NextEvent(ctx context.Context, id string, after int64) (*faden.Event, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.sessions[id]
+	if !ok {
+		return nil, fmt.Errorf("jsonl: next event: %w", faden.ErrNotFound)
+	}
+	after = max(after, 0)
+	if after >= int64(len(sess.events)) {
+		return nil, nil
+	}
+	start := sess.events[after]
+	end := sess.size
+	if after+1 < int64(len(sess.events)) {
+		end = sess.events[after+1]
+	}
+	line, err := bufio.NewReader(io.NewSectionReader(sess.file, start, end-start)).ReadBytes('\n')
+	if err != nil {
+		return nil, fmt.Errorf("jsonl: next event: %w", err)
+	}
+	var rec struct {
+		Event faden.Event `json:"event"`
+	}
+	if err := json.Unmarshal(line, &rec); err != nil {
+		return nil, fmt.Errorf("jsonl: next event: %w", err)
+	}
+	return &rec.Event, nil
+}

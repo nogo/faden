@@ -253,3 +253,17 @@ Rejected: the runner waits for the reset and retries itself.
 ## Decided 2026-11-02 — drain before the host stops (#29)
 
 **`Runner.Drain(ctx)` starts no turn and waits for the running turns to end.** A pending turn stays pending, including one submitted during the drain, and the next `Open` runs it. When `ctx` is done first, Drain closes as `Close` does and returns the context's error; unfinished turns stay running and continue on the next `Open`. The host sets the grace period with the deadline of `ctx`.
+
+## Decided 2026-11-02 — watch a session (#30)
+
+**Watch replays completed events, then follows the same sequence from the store.** Each watcher keeps a sequence number and one coalesced wake signal. Appends wake watchers after storage succeeds. Registration precedes replay, so an append during replay cannot fall between history and live delivery. Context cancellation or runner closure ends the watch. A read error closes its channel; the host can reconnect from its last sequence.
+
+**Store gains `NextEvent`, a single-item read.** This breaks store implementers once, rather than loading a whole session for every watcher. JSONL reads one indexed record; SQLite uses `LIMIT 1`. Direct host writes to the store do not produce live notifications.
+
+**Fragments never enter the store.** Claude requests partial messages and reads text and thinking deltas. Codex reads `item/agentMessage/delta`. A backend calls `Attempt.EmitFragment`; the attempt supplies the request ID. A standalone attempt has no watchers. llama remains unchanged.
+
+**Each watcher has 16 fragment slots, each limited to 4,096 text bytes.** Overflow and oversized fragments are dropped. One fragment can also wait at the output, so retained text is at most 69,632 bytes (17 × 4,096). On amd64 each fragment value occupies 48 bytes: 768 bytes for queue values, plus one 48-byte pending value. Request IDs reference the turn's existing string; no watcher copies them. Channel headers, the watcher, cursor, and goroutine add fixed overhead. The output channel has zero slots.
+
+**Completed items retain their original size.** A watcher holds at most one decoded event, never a history slice. Thus its bound is the largest single stored event plus the fixed fragment bound above, independent of session length. There is no new limit on completed event bytes. JSONL decoding temporarily holds one encoded record as well. `TestWatcherFragmentBound` guards queue limits and reports value sizes; `TestWatchReplayLiveAndSlowReader` proves an unread watcher does not block a turn.
+
+Rejected: buffering completed events, which either blocks the turn or loses durable history; polling full history, whose memory grows with session length.
