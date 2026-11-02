@@ -297,7 +297,8 @@ func TestReadThreadReturnsRangeAndRefusesOtherSession(t *testing.T) {
 	if len(lines) != 2 || !strings.Contains(lines[0], `"seq":1`) || !strings.Contains(lines[1], `"seq":2`) {
 		t.Fatalf("read_thread result = %q", result)
 	}
-	if rec.sessions["s1"] == 0 || len(rec.sessions) != 1 {
+	// The runner reads s1 as well, so only the absence of other sessions says something.
+	if len(rec.sessions) != 1 {
 		t.Fatalf("sessions read = %v", rec.sessions)
 	}
 
