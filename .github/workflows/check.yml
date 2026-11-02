@@ -1,0 +1,20 @@
+# Runs the same gate as locally: `mise run check` (build, vet, gofmt, tidy,
+# go test -race). Linux only: Local and jsonl
+# use Linux process groups, /proc and flock.
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: jdx/mise-action@6612f0ef07ed2a736cd1e00a94a065522dd41195 # v5.2.5
+      - run: mise run check

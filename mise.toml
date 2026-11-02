@@ -31,7 +31,11 @@ if [ "$BEFORE" != "$(cat go.mod go.sum 2>/dev/null | sha256sum)" ]; then
 fi
 """
 
+[tasks.build]
+description = "Build every package"
+run = "go build ./..."
+
 [tasks.check]
-description = "Full local verification: vet, fmt, tidy, test"
-depends = ["vet", "fmt:check", "tidy", "test"]
+description = "Full local verification: build, vet, fmt, tidy, test"
+depends = ["build", "vet", "fmt:check", "tidy", "test"]
 run = 'echo "All checks passed."'
