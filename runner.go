@@ -392,6 +392,9 @@ func (r *Runner) run(t Turn) error {
 // what the turn already did. A CLI's own session keeps little of a killed
 // turn. The turn's handover marker is left out: it is bookkeeping.
 func (r *Runner) addOwnEvents(t *Turn) error {
+	if t.HandoverBudget == 0 {
+		t.HandoverBudget = r.budget
+	}
 	events, err := r.store.Events(r.ctx, t.Session, 0)
 	if err != nil {
 		return err

@@ -10,11 +10,11 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/nogo/faden"
+	"github.com/nogo/faden/internal/continuationtest"
 	"github.com/nogo/faden/jsonl"
 )
 
@@ -145,33 +145,28 @@ func waitFile(t *testing.T, path string) []byte {
 	}
 }
 
+func runnerBackend(t *testing.T, dir string) continuationtest.Factory {
+	t.Helper()
+	return func(store faden.Store) faden.Backend {
+		b, err := New(Config{Store: store, Runtime: faden.Local{PIDDir: dir, Dir: dir}, Args: []string{"--permission-mode", "bypassPermissions"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+}
+
 func TestHostHelper(t *testing.T) {
 	dir := os.Getenv("FADEN_CLAUDE_HOST")
 	if dir == "" {
 		return
 	}
-	s := &checkpoint{path: filepath.Join(dir, "cursor")}
-	b, _ := New(Config{Store: s, Runtime: faden.Local{PIDDir: dir, Dir: dir}, Args: []string{"--permission-mode", "bypassPermissions"}})
 	input := "Write first.txt containing FIRST. Then run bash sleep 120. Then write second.txt and third.txt containing DONE, one after another. If interrupted and resumed, before using tools say FIRST_FILE_KNOWN if this conversation shows that first.txt was written, or FIRST_FILE_UNKNOWN otherwise."
-	_, err := b.Run(t.Context(), faden.Turn{Session: "s", Input: input}, nil, func(faden.Event) error { return nil })
-	if err != nil {
-		t.Fatal(err)
-	}
-}
-
-func startHost(t *testing.T, dir string) *exec.Cmd {
-	t.Helper()
-	cmd := exec.Command(os.Args[0], "-test.run=^TestHostHelper$")
-	cmd.Env = append(os.Environ(), "FADEN_CLAUDE_HOST="+dir)
-	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })
-	return cmd
+	continuationtest.Host(t, dir, "claude", input, runnerBackend(t, dir))
 }
 
 func TestLiveResumeAfterKill(t *testing.T) {
+	t.Setenv("FADEN_KILL_AFTER_FILE", "first.txt")
 	if os.Getenv("FADEN_LIVE") != "1" {
 		t.Skip("set FADEN_LIVE=1 to run Claude Code")
 	}
@@ -179,26 +174,13 @@ func TestLiveResumeAfterKill(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	cmd := startHost(t, dir)
-	waitFile(t, filepath.Join(dir, "first.txt"))
-	if err := cmd.Process.Signal(syscall.SIGKILL); err != nil {
-		t.Fatal(err)
-	}
-	cmd.Wait()
-	raw := waitFile(t, filepath.Join(dir, "cursor"))
-	s := &checkpoint{path: filepath.Join(dir, "cursor")}
-	b, _ := New(Config{Store: s, Runtime: faden.Local{PIDDir: dir, Dir: dir}, Args: []string{"--permission-mode", "bypassPermissions"}})
+	continuationtest.KillHost(t, dir, "FADEN_CLAUDE_HOST")
+	events := continuationtest.Continue(t, dir, "claude", runnerBackend(t, dir))
 	var answer strings.Builder
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
-	defer cancel()
-	_, err := b.Run(ctx, faden.Turn{Session: "s", Input: "Continue where you left off."}, raw, func(e faden.Event) error {
+	for _, e := range events {
 		if e.Kind == faden.AssistantMessage {
 			answer.WriteString(e.Text)
 		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
 	}
 	waitFile(t, filepath.Join(dir, "second.txt"))
 	waitFile(t, filepath.Join(dir, "third.txt"))
@@ -238,6 +220,9 @@ func TestRunnerContinuesStoredTurn(t *testing.T) {
 	if err := store.SetCursor(t.Context(), "s", "claude", raw); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.AppendEvent(t.Context(), faden.Event{Session: "s", RequestID: "r", Kind: faden.AssistantMessage, Text: strings.Repeat("x", 200)}); err != nil {
+		t.Fatal(err)
+	}
 	store.Close()
 	store, err = jsonl.Open(filepath.Join(dir, "store"))
 	if err != nil {
@@ -245,7 +230,7 @@ func TestRunnerContinuesStoredTurn(t *testing.T) {
 	}
 	defer store.Close()
 	b, _ := New(Config{Store: store, Runtime: faden.Local{PIDDir: dir, Dir: dir}})
-	runner, err := faden.Open(store, map[string]faden.Backend{"claude": b})
+	runner, err := faden.Open(store, map[string]faden.Backend{"claude": b}, faden.Options{Budget: 64})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,6 +246,9 @@ func TestRunnerContinuesStoredTurn(t *testing.T) {
 	}
 	args, _ := os.ReadFile(filepath.Join(dir, "args"))
 	input, _ := os.ReadFile(filepath.Join(dir, "input"))
+	if strings.Contains(string(input), strings.Repeat("x", 200)) || !strings.Contains(string(input), "Omitted events") {
+		t.Fatalf("host budget ignored: %s", input)
+	}
 	if !strings.Contains(string(args), "--resume\n12345678-1234-4123-8123-123456789abc") || !strings.Contains(string(input), "Continue where you left off.") {
 		t.Fatalf("args %s input %s", args, input)
 	}
@@ -307,5 +295,42 @@ func TestThreadsTokenOnlyInEnvironment(t *testing.T) {
 	}
 	if !strings.Contains(string(args), "--mcp-config") || !strings.Contains(string(config), "${FADEN_MCP_TOKEN}") || !grant.revoked {
 		t.Fatalf("args %q config %q revoked %v", args, config, grant.revoked)
+	}
+}
+
+func TestKilledTurnCarriesStoredToolEvents(t *testing.T) {
+	dir := t.TempDir()
+	program := "#!/bin/sh\ncat > input\ncat fixture\nexec sleep 120\n"
+	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(program), 0700); err != nil {
+		t.Fatal(err)
+	}
+	partial := strings.Split(stream, `{"type":"assistant","message":{"id":"msg_answer"`)[0]
+	if err := os.WriteFile(filepath.Join(dir, "fixture"), []byte(partial), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	continuationtest.KillHost(t, dir, "FADEN_CLAUDE_HOST")
+	if err := os.WriteFile(filepath.Join(dir, "fixture"), []byte(stream), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte("#!/bin/sh\ncat > input\ncat fixture\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	continuationtest.Continue(t, dir, "claude", runnerBackend(t, dir))
+	data, err := os.ReadFile(filepath.Join(dir, "input"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var input struct{ Message struct{ Content string } }
+	if err := json.Unmarshal(data, &input); err != nil {
+		t.Fatal(err)
+	}
+	prompt := input.Message.Content
+	end := strings.Index(prompt, "Continue where you left off.")
+	for _, text := range []string{"cat greeting.txt", "hello"} {
+		at := strings.Index(prompt, text)
+		if at < 0 || end < 0 || at >= end {
+			t.Fatalf("missing %q before continuation: %s", text, prompt)
+		}
 	}
 }

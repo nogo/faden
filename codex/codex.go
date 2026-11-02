@@ -54,9 +54,9 @@ func New(cfg Config) (*Backend, error) {
 	return &Backend{cfg: cfg}, nil
 }
 
-// ContinuesWithoutPrompt reports true: after thread/resume, turn/start with
-// no input items continues the thread (as t3code does).
-func (*Backend) ContinuesWithoutPrompt() bool { return true }
+// ContinuesWithoutPrompt reports false so the runner supplies stored events
+// that Codex's own transcript can lose when a turn is killed.
+func (*Backend) ContinuesWithoutPrompt() bool { return false }
 
 // Stop stops the app-server an earlier attempt of t left running.
 func (b *Backend) Stop(ctx context.Context, t faden.Turn) error {

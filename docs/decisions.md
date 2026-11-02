@@ -113,3 +113,9 @@ A record contains the process group leader's PID and its Linux start time from `
 This supersedes `RunStream`, `Local.WithEnv`, and the fixed container turn field in the earlier runtime, streaming, MCP, and Codex decisions. `Runtime.Run` takes one `Command` with a turn key, argv, extra environment, stdin, and stdout. Nil stdout buffers both output streams in `Result.Output`; streamed stdout leaves stderr there. Claude, Codex, and llama use the request ID as the key. Claude passes the MCP token through the command environment with every runtime. The host must make its MCP config file and server reachable from the command.
 
 Local records live in the host's durable `PIDDir`; container records live in `/tmp/faden` inside the host's container. Both name records `<sha256(key)>.pid`, so arbitrary keys cannot escape the directory. Each runtime writes a temporary file, syncs it, renames it, and syncs the directory before releasing the command. Commands remove their records when they end. Starting a command recovers only its own key. The container supplies Linux `/proc`, `setsid`, `awk`, and `sync` with file operands. Faden does not own the container lifecycle.
+
+## Decided 2026-11-02 — killed-turn continuation through the runner
+
+This supersedes the Codex decision to continue without a prompt. Codex requests a continuation prompt from the runner, which includes the killed turn's stored events. Its native transcript can omit tool results after a kill, as measured above. An empty input remains supported by the backend protocol.
+
+A continuation without a handover uses the host's `Options.Budget`. A continuation with a handover keeps the budget recorded in that handover. Both select stored events through the same byte budget rules.

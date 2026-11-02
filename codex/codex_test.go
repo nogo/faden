@@ -8,12 +8,12 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/nogo/faden"
 	"github.com/nogo/faden/handover"
+	"github.com/nogo/faden/internal/continuationtest"
 )
 
 // These invented lines exercise the wire format. They are not a real-run recording.
@@ -151,8 +151,8 @@ func TestTurnThenResumeWithoutPrompt(t *testing.T) {
 	if !strings.Contains(string(got), `"threadId":"thr_invented"`) || !strings.Contains(string(got), `"input":[]`) {
 		t.Fatalf("resume lines:\n%s", got)
 	}
-	if !b.ContinuesWithoutPrompt() {
-		t.Fatal("codex continues without a prompt")
+	if b.ContinuesWithoutPrompt() {
+		t.Fatal("codex needs stored events in its continuation prompt")
 	}
 }
 
@@ -206,35 +206,48 @@ func TestFailures(t *testing.T) {
 	}
 }
 
+func runnerBackend(t *testing.T, dir string) continuationtest.Factory {
+	t.Helper()
+	return func(store faden.Store) faden.Backend {
+		b, err := New(Config{Store: store, Runtime: faden.Local{PIDDir: dir, Dir: dir}, Args: []string{"-c", `sandbox_mode="danger-full-access"`, "-c", `approval_policy="never"`}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+}
+
 func TestHostHelper(t *testing.T) {
 	dir := os.Getenv("FADEN_CODEX_HOST")
 	if dir == "" {
 		return
 	}
-	s := &checkpoint{dir: dir, path: filepath.Join(dir, "cursor")}
-	b, _ := New(Config{Store: s, Runtime: faden.Local{PIDDir: dir, Dir: dir}, Args: []string{"-c", `sandbox_mode="danger-full-access"`, "-c", `approval_policy="never"`}})
 	input := "Write first.txt containing FIRST. Then run bash sleep 120. Then write second.txt and third.txt containing DONE, one after another. If interrupted and resumed, before using tools say FIRST_FILE_KNOWN if this conversation shows that first.txt was written, or FIRST_FILE_UNKNOWN otherwise."
-	if _, err := b.Run(t.Context(), faden.Turn{Session: "s", Input: input}, nil, func(faden.Event) error { return nil }); err != nil {
-		t.Fatal(err)
-	}
+	continuationtest.Host(t, dir, "codex", input, runnerBackend(t, dir))
 }
 
 func waitFile(t *testing.T, path string) []byte {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Minute)
-	for time.Now().Before(deadline) {
+	timer := time.NewTimer(2 * time.Minute)
+	defer timer.Stop()
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for {
 		if data, err := os.ReadFile(path); err == nil {
 			return data
 		}
-		time.Sleep(10 * time.Millisecond)
+		select {
+		case <-timer.C:
+			t.Fatalf("waiting for %s", path)
+		case <-tick.C:
+		}
 	}
-	t.Fatalf("waiting for %s", path)
-	return nil
 }
 
-// TestLiveResumeAfterKill kills the host mid-turn, continues without a prompt,
+// TestLiveResumeAfterKill kills the host mid-turn, continues through the runner,
 // and logs whether Codex knew the work done before the kill.
 func TestLiveResumeAfterKill(t *testing.T) {
+	t.Setenv("FADEN_KILL_AFTER_FILE", "first.txt")
 	if os.Getenv("FADEN_LIVE") != "1" {
 		t.Skip("set FADEN_LIVE=1 to run Codex")
 	}
@@ -242,32 +255,16 @@ func TestLiveResumeAfterKill(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	cmd := exec.Command(os.Args[0], "-test.run=^TestHostHelper$")
-	cmd.Env = append(os.Environ(), "FADEN_CODEX_HOST="+dir)
-	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })
-	waitFile(t, filepath.Join(dir, "first.txt"))
-	if err := cmd.Process.Signal(syscall.SIGKILL); err != nil {
-		t.Fatal(err)
-	}
-	cmd.Wait()
-	raw := waitFile(t, filepath.Join(dir, "cursor"))
-	b, _ := newBackend(t, dir, "-c", `sandbox_mode="danger-full-access"`, "-c", `approval_policy="never"`)
+	continuationtest.KillHost(t, dir, "FADEN_CODEX_HOST")
+	events := continuationtest.Continue(t, dir, "codex", runnerBackend(t, dir))
 	var answer strings.Builder
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
-	defer cancel()
-	_, err := b.Run(ctx, faden.Turn{Session: "s"}, raw, func(e faden.Event) error {
+	for _, e := range events {
 		if e.Kind == faden.AssistantMessage {
 			answer.WriteString(e.Text)
 		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
 	}
+	waitFile(t, filepath.Join(dir, "second.txt"))
+	waitFile(t, filepath.Join(dir, "third.txt"))
 	knowledge := "indeterminate"
 	if strings.Contains(answer.String(), "FIRST_FILE_UNKNOWN") {
 		knowledge = "unknown"
@@ -276,4 +273,38 @@ func TestLiveResumeAfterKill(t *testing.T) {
 	}
 	t.Logf("Codex knowledge of first file: %s", knowledge)
 	t.Logf("Codex resume after a kill; resumed assistant: %s", answer.String())
+}
+
+func TestKilledTurnCarriesStoredToolEvents(t *testing.T) {
+	partial := strings.Split(turnLines, `{"method":"item/completed","params":{"item":{"type":"fileChange"`)[0]
+	dir := setup(t, partial)
+	continuationtest.KillHost(t, dir, "FADEN_CODEX_HOST")
+	if err := os.WriteFile(filepath.Join(dir, "fixture"), []byte(turnLines), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, "got")); err != nil {
+		t.Fatal(err)
+	}
+	continuationtest.Continue(t, dir, "codex", runnerBackend(t, dir))
+	data, err := os.ReadFile(filepath.Join(dir, "got"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var prompt string
+	for _, line := range strings.Split(string(data), "\n") {
+		var m struct {
+			Method string
+			Params struct{ Input []struct{ Text string } }
+		}
+		if json.Unmarshal([]byte(line), &m) == nil && m.Method == "turn/start" && len(m.Params.Input) > 0 {
+			prompt = m.Params.Input[0].Text
+		}
+	}
+	end := strings.Index(prompt, "Continue where you left off.")
+	for _, text := range []string{"cat greeting.txt", "hello"} {
+		at := strings.Index(prompt, text)
+		if at < 0 || end < 0 || at >= end {
+			t.Fatalf("missing %q before continuation: %s", text, prompt)
+		}
+	}
 }
