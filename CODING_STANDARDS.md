@@ -24,7 +24,7 @@ What a host sees is the product. Keep it small; every exported name is a promise
 - Configure with a struct when callers set its fields, as backends do. A new field's zero value keeps the old behaviour. Reach for functional options only when most callers set nothing.
 - No field faden writes but never reads. No run-time field on a stored type (`json:"-"`); it belongs on the type that lives for the run.
 - No signature change and no interface method without a line in `docs/decisions.md`: each one breaks every caller. While the module is young, break once for a whole change, not once per step.
-- Extend a function with a field on its options struct, never with a new variadic parameter: that breaks callers that hold the function as a value.
+- Extend a function with a field on its options struct. Never add a parameter, variadic or not, to an exported function: that breaks callers that hold the function as a value.
 
 ### Naming
 - Short receivers, same name on every method of a type.
