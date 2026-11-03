@@ -112,6 +112,7 @@ const (
 	idInitialize = 1
 	idThread     = 2
 	idTurn       = 3
+	idInterrupt  = 4
 )
 
 // graceAfterTurn is how long Codex gets to exit after its stdin closes.
@@ -130,30 +131,22 @@ type message struct {
 // Run starts the app-server, opens or resumes the thread, saves the thread id,
 // then starts the turn and stores completed items until the turn ends.
 func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error {
-	var c cursor
+	x := &exchange{ctx: ctx, a: a, t: t, usage: attemptUsage{model: t.Model}}
 	if raw := a.Cursor(); len(raw) > 0 {
-		if err := json.Unmarshal(raw, &c); err != nil {
+		if err := json.Unmarshal(raw, &x.cursor); err != nil {
 			return fmt.Errorf("codex: cursor: %w", err)
 		}
 	}
 	setup := a.Setup()
-	items := []map[string]string{}
-	// A continuation without a prompt sends nothing: the thread already holds the files.
-	if t.Input != "" || t.Context != "" {
-		files, err := attach.Open(setup.Dir, t.Files)
-		if err != nil {
-			return fmt.Errorf("codex: %w", err)
-		}
-		for _, im := range files.Images {
-			items = append(items, map[string]string{"type": "localImage", "path": im.Abs})
-		}
-		files.Close()
-		text := attach.WithLines(handover.Prompt(t, a), files.Others)
-		items = append([]map[string]string{{"type": "text", "text": text}}, items...)
+	items, err := turnInput(t, a, setup.Dir)
+	if err != nil {
+		return err
 	}
+	x.items = items
 	argv := append([]string{"codex", "app-server"}, b.cfg.Args...)
 	argv = append(argv, setup.Args...)
 
+	// The app-server outlives ctx: on cancellation it first gets turn/interrupt.
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancel()
 	// An *os.File lets the child read stdin directly, so no copying goroutine
@@ -177,52 +170,8 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 		done <- outcome{res, err}
 	}()
 
-	var wire sync.Mutex // guards writes and the active protocol turn id
-	var turnID, threadID string
-	send := func(v map[string]any) error {
-		wire.Lock()
-		defer wire.Unlock()
-		data, _ := json.Marshal(v)
-		_, err := stdinW.Write(append(data, '\n'))
-		return err
-	}
-	request := func(id int, method string, params any) error {
-		return send(map[string]any{"id": id, "method": method, "params": params})
-	}
-	var once sync.Once
-	stop := func() {
-		once.Do(func() {
-			// Release a blocked prompt write before waiting for the wire lock.
-			stdinW.SetWriteDeadline(time.Now().Add(time.Second))
-			wire.Lock()
-			if turnID != "" {
-				data, _ := json.Marshal(map[string]any{"id": 4, "method": "turn/interrupt", "params": map[string]string{"threadId": threadID, "turnId": turnID}})
-				stdinW.SetWriteDeadline(time.Now().Add(time.Second))
-				stdinW.Write(append(data, '\n'))
-			}
-			wire.Unlock()
-			cancel()
-		})
-	}
-	b.mu.Lock()
-	b.active[t.RequestID] = stop
-	b.mu.Unlock()
-	watchDone := make(chan struct{})
-	defer func() {
-		cancel()
-		<-watchDone
-		b.mu.Lock()
-		delete(b.active, t.RequestID)
-		b.mu.Unlock()
-	}()
-	go func() {
-		defer close(watchDone)
-		select {
-		case <-ctx.Done():
-			stop()
-		case <-runCtx.Done():
-		}
-	}()
+	x.conn = &conn{stdin: stdinW, cancel: cancel}
+	defer b.track(ctx, runCtx, t.RequestID, x.conn)()
 	finish := func(ended bool, runErr error) error {
 		stdinW.Close()
 		var out outcome
@@ -251,23 +200,13 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 		return nil
 	}
 
-	if err := request(idInitialize, "initialize", map[string]any{"clientInfo": map[string]string{"name": "faden", "version": "1"}}); err != nil {
+	if err := x.conn.request(idInitialize, "initialize", map[string]any{"clientInfo": map[string]string{"name": "faden", "version": "1"}}); err != nil {
 		return finish(false, err)
 	}
+	defer x.usage.report(a)
 	scan := bufio.NewScanner(stdoutR)
 	scan.Buffer(make([]byte, 4096), 16*1024*1024)
-	emit := func(e faden.Event) error { return a.Emit(ctx, e) }
 	ended := false
-	var usage faden.ModelUsage
-	var base *faden.ModelUsage
-	model := t.Model
-	defer func() {
-		if usage != (faden.ModelUsage{}) {
-			usage.Model = model
-			a.AddUsage(usage)
-		}
-	}()
-	limits := &limitState{}
 	var runErr error
 	for runErr == nil && !ended && scan.Scan() {
 		var m message
@@ -275,73 +214,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 			runErr = err
 			break
 		}
-		if string(m.ID) == fmt.Sprint(idThread) {
-			var p struct {
-				Thread struct {
-					ID string `json:"id"`
-				} `json:"thread"`
-			}
-			if json.Unmarshal(m.Result, &p) == nil {
-				wire.Lock()
-				threadID = p.Thread.ID
-				wire.Unlock()
-			}
-		}
-		if m.Method == "turn/started" || string(m.ID) == fmt.Sprint(idTurn) {
-			var p struct {
-				Turn struct {
-					ID string `json:"id"`
-				} `json:"turn"`
-			}
-			raw := m.Params
-			if m.Method == "" {
-				raw = m.Result
-			}
-			if json.Unmarshal(raw, &p) == nil && p.Turn.ID != "" {
-				wire.Lock()
-				turnID = p.Turn.ID
-				wire.Unlock()
-			}
-		}
-		switch {
-		case m.Method != "" && len(m.ID) > 0:
-			runErr = send(declineOrReject(m))
-		case m.Method != "":
-			if m.Method == "item/agentMessage/delta" {
-				var p struct {
-					Delta string `json:"delta"`
-				}
-				runErr = json.Unmarshal(m.Params, &p)
-				if runErr == nil {
-					a.EmitFragment(faden.Fragment{Kind: faden.FragmentText, Text: p.Delta})
-				}
-			} else if m.Method == "thread/tokenUsage/updated" {
-				var total, last faden.ModelUsage
-				total, last, runErr = tokenUsage(m.Params)
-				if runErr == nil {
-					if base == nil {
-						v := subtractUsage(total, last)
-						base = &v
-					}
-					usage = subtractUsage(total, *base)
-				}
-			} else {
-				limits.note(m)
-				ended, runErr = notification(m, emit, limits)
-			}
-		case m.Error != nil:
-			runErr = fmt.Errorf("request %s failed: %s", m.ID, m.Error.Message)
-		default:
-			if string(m.ID) == fmt.Sprint(idThread) {
-				var result struct {
-					Model string `json:"model"`
-				}
-				if json.Unmarshal(m.Result, &result) == nil && result.Model != "" {
-					model = result.Model
-				}
-			}
-			runErr = answer(ctx, a, t, &c, m, items, request, send)
-		}
+		ended, runErr = x.handle(m)
 	}
 	if runErr == nil && !ended {
 		runErr = scan.Err()
@@ -350,6 +223,247 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 		}
 	}
 	return finish(ended, runErr)
+}
+
+// turnInput is the input of turn/start: the prompt with a line for each file
+// that is not an image, then the images as local files. A continuation
+// without a prompt sends nothing: the thread already holds the files.
+func turnInput(t faden.Turn, a *faden.Attempt, dir string) ([]map[string]string, error) {
+	items := []map[string]string{}
+	if t.Input == "" && t.Context == "" {
+		return items, nil
+	}
+	files, err := attach.Open(dir, t.Files)
+	if err != nil {
+		return nil, fmt.Errorf("codex: %w", err)
+	}
+	defer files.Close()
+	items = append(items, map[string]string{"type": "text", "text": attach.WithLines(handover.Prompt(t, a), files.Others)})
+	for _, im := range files.Images {
+		items = append(items, map[string]string{"type": "localImage", "path": im.Abs})
+	}
+	return items, nil
+}
+
+// track lets Stop interrupt c while the attempt of requestID runs, and
+// interrupts c when ctx ends before runCtx does. Call the returned func
+// when the attempt ends. The runner cancels ctx and then calls Stop, which
+// kills the app-server; Stop interrupts first, so Codex learns of the
+// cancellation before it is killed.
+func (b *Backend) track(ctx, runCtx context.Context, requestID string, c *conn) (untrack func()) {
+	b.mu.Lock()
+	b.active[requestID] = c.interrupt
+	b.mu.Unlock()
+	watched := make(chan struct{})
+	go func() {
+		defer close(watched)
+		select {
+		case <-ctx.Done():
+			c.interrupt()
+		case <-runCtx.Done():
+		}
+	}()
+	return func() {
+		c.cancel()
+		<-watched
+		b.mu.Lock()
+		delete(b.active, requestID)
+		b.mu.Unlock()
+	}
+}
+
+// conn is one attempt's JSON-RPC conversation with an app-server. It owns
+// the write side of the pipe and the ids the reply loop learns, under one
+// lock, so an interrupt sent from another goroutine never interleaves with a
+// request and always names the current turn.
+type conn struct {
+	mu       sync.Mutex // guards writes to stdin, threadID and turnID
+	stdin    *os.File
+	threadID string
+	turnID   string
+	cancel   context.CancelFunc // stops the app-server
+	once     sync.Once
+}
+
+func (c *conn) send(v map[string]any) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	data, _ := json.Marshal(v)
+	_, err := c.stdin.Write(append(data, '\n'))
+	return err
+}
+
+func (c *conn) request(id int, method string, params any) error {
+	return c.send(map[string]any{"id": id, "method": method, "params": params})
+}
+
+// learn keeps the thread and turn ids that m carries, so interrupt can name them.
+func (c *conn) learn(m message) {
+	if string(m.ID) == fmt.Sprint(idThread) {
+		var p struct {
+			Thread struct {
+				ID string `json:"id"`
+			} `json:"thread"`
+		}
+		if json.Unmarshal(m.Result, &p) == nil {
+			c.mu.Lock()
+			c.threadID = p.Thread.ID
+			c.mu.Unlock()
+		}
+	}
+	if m.Method == "turn/started" || string(m.ID) == fmt.Sprint(idTurn) {
+		var p struct {
+			Turn struct {
+				ID string `json:"id"`
+			} `json:"turn"`
+		}
+		raw := m.Params
+		if m.Method == "" {
+			raw = m.Result
+		}
+		if json.Unmarshal(raw, &p) == nil && p.Turn.ID != "" {
+			c.mu.Lock()
+			c.turnID = p.Turn.ID
+			c.mu.Unlock()
+		}
+	}
+}
+
+// interrupt sends turn/interrupt for the active turn, if Codex named one, and
+// then stops the app-server. Only the first call does anything.
+func (c *conn) interrupt() {
+	c.once.Do(func() {
+		// Release a blocked prompt write before waiting for the lock.
+		c.stdin.SetWriteDeadline(time.Now().Add(time.Second))
+		c.mu.Lock()
+		if c.turnID != "" {
+			data, _ := json.Marshal(map[string]any{"id": idInterrupt, "method": "turn/interrupt", "params": map[string]string{"threadId": c.threadID, "turnId": c.turnID}})
+			c.stdin.SetWriteDeadline(time.Now().Add(time.Second))
+			c.stdin.Write(append(data, '\n'))
+		}
+		c.mu.Unlock()
+		c.cancel()
+	})
+}
+
+// exchange is the reply loop of one attempt: what it sends, what it stores,
+// and what it learns that is never stored.
+type exchange struct {
+	ctx    context.Context
+	a      *faden.Attempt
+	t      faden.Turn
+	cursor cursor
+	items  []map[string]string // the input of turn/start
+	conn   *conn
+	usage  attemptUsage
+	limits limitState
+}
+
+// handle answers one message from Codex. It reports true once the turn ended.
+func (x *exchange) handle(m message) (bool, error) {
+	x.conn.learn(m)
+	switch {
+	case m.Method != "" && len(m.ID) > 0:
+		return false, x.conn.send(declineOrReject(m))
+	case m.Method == "item/agentMessage/delta":
+		var p struct {
+			Delta string `json:"delta"`
+		}
+		if err := json.Unmarshal(m.Params, &p); err != nil {
+			return false, err
+		}
+		x.a.EmitFragment(faden.Fragment{Kind: faden.FragmentText, Text: p.Delta})
+		return false, nil
+	case m.Method == "thread/tokenUsage/updated":
+		return false, x.usage.update(m.Params)
+	case m.Method != "":
+		x.limits.note(m)
+		return notification(m, x.emit, &x.limits)
+	case m.Error != nil:
+		return false, fmt.Errorf("request %s failed: %s", m.ID, m.Error.Message)
+	}
+	return false, x.answer(m)
+}
+
+func (x *exchange) emit(e faden.Event) error { return x.a.Emit(x.ctx, e) }
+
+// answer advances the handshake: initialize, then thread/start or
+// thread/resume, then turn/start once the thread id is stored.
+func (x *exchange) answer(m message) error {
+	switch string(m.ID) {
+	case fmt.Sprint(idInitialize):
+		if err := x.conn.send(map[string]any{"method": "initialized"}); err != nil {
+			return err
+		}
+		params := map[string]any{}
+		if x.t.Model != "" {
+			params["model"] = x.t.Model
+		}
+		setup := x.a.Setup()
+		if setup.Dir != "" {
+			params["cwd"] = setup.Dir
+		}
+		if setup.System != "" {
+			params["developerInstructions"] = setup.System
+		}
+		if x.cursor.ThreadID != "" {
+			params["threadId"] = x.cursor.ThreadID
+			return x.conn.request(idThread, "thread/resume", params)
+		}
+		return x.conn.request(idThread, "thread/start", params)
+	case fmt.Sprint(idThread):
+		var res struct {
+			Thread struct {
+				ID string `json:"id"`
+			} `json:"thread"`
+			Model string `json:"model"`
+		}
+		err := json.Unmarshal(m.Result, &res)
+		if err == nil && res.Model != "" {
+			x.usage.model = res.Model
+		}
+		if err != nil || res.Thread.ID == "" {
+			return errors.New("thread answer has no thread id")
+		}
+		x.cursor.ThreadID = res.Thread.ID
+		data, _ := json.Marshal(x.cursor)
+		if err := x.a.SaveCursor(x.ctx, data); err != nil {
+			return fmt.Errorf("checkpoint: %w", err)
+		}
+		return x.conn.request(idTurn, "turn/start", map[string]any{"threadId": x.cursor.ThreadID, "input": x.items})
+	}
+	return nil
+}
+
+// attemptUsage turns Codex's thread totals into this attempt's use. Codex
+// reports totals for the whole thread, so the total before the attempt's
+// first call is subtracted: earlier turns and repeated snapshots do not count.
+type attemptUsage struct {
+	base  *faden.ModelUsage
+	used  faden.ModelUsage
+	model string // the model Codex named for the thread, else the turn's
+}
+
+func (u *attemptUsage) update(raw json.RawMessage) error {
+	total, last, err := tokenUsage(raw)
+	if err != nil {
+		return err
+	}
+	if u.base == nil {
+		v := subtractUsage(total, last)
+		u.base = &v
+	}
+	u.used = subtractUsage(total, *u.base)
+	return nil
+}
+
+// report adds the attempt's use to a, if Codex reported any.
+func (u *attemptUsage) report(a *faden.Attempt) {
+	if u.used != (faden.ModelUsage{}) {
+		used := u.used
+		used.Model = u.model
+		a.AddUsage(used)
+	}
 }
 
 // Subtract the thread total before this attempt to exclude earlier turns.
@@ -378,49 +492,6 @@ func tokenUsage(raw json.RawMessage) (faden.ModelUsage, faden.ModelUsage, error)
 		return faden.ModelUsage{}, faden.ModelUsage{}, err
 	}
 	return p.TokenUsage.Total.usage(), p.TokenUsage.Last.usage(), nil
-}
-
-// answer advances the handshake: initialize, then thread/start or
-// thread/resume, then turn/start once the thread id is stored.
-func answer(ctx context.Context, a *faden.Attempt, t faden.Turn, c *cursor, m message, items []map[string]string, request func(int, string, any) error, send func(map[string]any) error) error {
-	switch string(m.ID) {
-	case fmt.Sprint(idInitialize):
-		if err := send(map[string]any{"method": "initialized"}); err != nil {
-			return err
-		}
-		params := map[string]any{}
-		if t.Model != "" {
-			params["model"] = t.Model
-		}
-		setup := a.Setup()
-		if setup.Dir != "" {
-			params["cwd"] = setup.Dir
-		}
-		if setup.System != "" {
-			params["developerInstructions"] = setup.System
-		}
-		if c.ThreadID != "" {
-			params["threadId"] = c.ThreadID
-			return request(idThread, "thread/resume", params)
-		}
-		return request(idThread, "thread/start", params)
-	case fmt.Sprint(idThread):
-		var res struct {
-			Thread struct {
-				ID string `json:"id"`
-			} `json:"thread"`
-		}
-		if err := json.Unmarshal(m.Result, &res); err != nil || res.Thread.ID == "" {
-			return errors.New("thread answer has no thread id")
-		}
-		c.ThreadID = res.Thread.ID
-		data, _ := json.Marshal(c)
-		if err := a.SaveCursor(ctx, data); err != nil {
-			return fmt.Errorf("checkpoint: %w", err)
-		}
-		return request(idTurn, "turn/start", map[string]any{"threadId": c.ThreadID, "input": items})
-	}
-	return nil
 }
 
 // declineOrReject answers a request from Codex. Approvals are declined;
