@@ -266,3 +266,27 @@ func TestLiveEditsFile(t *testing.T) {
 		t.Fatalf("file = %q", text)
 	}
 }
+
+func TestFileToolsWithRelativeDir(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	os.Mkdir("workspace", 0o755)
+	os.Mkdir("outside", 0o755)
+	res := runFileTools(t, localRuntime(t, ""), "workspace",
+		fileCall{"write", map[string]any{"path": "a.txt", "content": "one"}},
+		fileCall{"read", map[string]any{"path": "a.txt"}},
+		fileCall{"read", map[string]any{"path": "../outside"}},
+		fileCall{"read", map[string]any{"path": filepath.Join(root, "outside")}},
+	)
+	if res[0].Failed || res[1].Failed || res[1].Output != "one" {
+		t.Fatalf("write/read = %+v, %+v", res[0], res[1])
+	}
+	if got, _ := os.ReadFile("workspace/a.txt"); string(got) != "one" {
+		t.Fatalf("file = %q", got)
+	}
+	for _, e := range res[2:] {
+		if !e.Failed {
+			t.Fatalf("escape allowed: %+v", e)
+		}
+	}
+}

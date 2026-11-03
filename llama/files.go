@@ -24,7 +24,7 @@ const (
 var fileToolNames = []string{readName, writeName, editName}
 
 // confineScript resolves "$2" and fails unless it stays inside the directory
-// "$1" after symlinks. The path may not exist yet: its deepest existing
+// "$1" (the command's working directory, ".") after symlinks. The path may not exist yet: its deepest existing
 // ancestor is resolved instead. Every file script starts with it. Exit 4
 // means the path escapes.
 const confineScript = `root=$(readlink -f "$1") || exit 3
@@ -140,15 +140,11 @@ type fileRunner struct {
 
 // run executes a script that starts with confineScript. extra become $3 on.
 func (f fileRunner) run(ctx context.Context, path string, stdin *strings.Reader, script string, extra ...string) ([]byte, error) {
-	dir := f.setup.Dir
-	if dir == "" {
-		dir = "."
-	}
-	target, err := lexicalPath(dir, path)
+	target, err := lexicalPath(path)
 	if err != nil {
 		return nil, err
 	}
-	argv := append([]string{"sh", "-c", script, "sh", dir, target}, extra...)
+	argv := append([]string{"sh", "-c", script, "sh", ".", target}, extra...)
 	cmd := faden.Command{Key: f.key, Dir: f.setup.Dir, Env: f.setup.Env, Argv: argv}
 	if stdin != nil {
 		cmd.Stdin = stdin
@@ -163,26 +159,15 @@ func (f fileRunner) run(ctx context.Context, path string, stdin *strings.Reader,
 	return res.Output, nil
 }
 
-// lexicalPath joins path to dir and removes "." and ".." without touching
-// the file system. The shell script then checks symlinks.
-func lexicalPath(dir, path string) (string, error) {
+// lexicalPath cleans path without touching the file system and rejects a relative
+// path that leaves the working directory. The script then checks symlinks and
+// absolute paths against the working directory ".".
+func lexicalPath(path string) (string, error) {
 	if path == "" {
 		return "", errors.New("path is empty")
 	}
-	p := path
-	if !filepath.IsAbs(p) {
-		p = filepath.Join(dir, p)
-	}
-	p = filepath.Clean(p)
-	if filepath.IsAbs(dir) || filepath.IsAbs(p) {
-		if filepath.IsAbs(dir) {
-			if rel, err := filepath.Rel(filepath.Clean(dir), p); err != nil || rel == ".." || strings.HasPrefix(rel, "../") {
-				return "", errors.New("path is outside the working directory")
-			}
-		}
-		return p, nil
-	}
-	if p == ".." || strings.HasPrefix(p, "../") {
+	p := filepath.Clean(path)
+	if !filepath.IsAbs(p) && (p == ".." || strings.HasPrefix(p, "../")) {
 		return "", errors.New("path is outside the working directory")
 	}
 	return p, nil
