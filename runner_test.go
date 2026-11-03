@@ -580,18 +580,18 @@ func TestCancelPendingAndRunning(t *testing.T) {
 			count++
 		}
 	}
-	if count != 2 {
-		t.Fatalf("cancel events = %d", count)
+	if count != 1 {
+		t.Fatalf("cancel events = %d, want 1: only the running turn started", count)
 	}
 	thread, err := handover.ReadThread(t.Context(), store, "s", json.RawMessage(`{"from":1,"to":100}`))
-	if err != nil || strings.Count(thread, `"text":"cancelled"`) != 2 {
+	if err != nil || strings.Count(thread, `"text":"cancelled"`) != 1 {
 		t.Fatalf("read_thread = %s, %v", thread, err)
 	}
 	var selected strings.Builder
 	for _, item := range handover.Select(events, "continue", 16000) {
 		selected.WriteString(item.Text)
 	}
-	if strings.Count(selected.String(), "turn_ended  cancelled") != 2 {
+	if strings.Count(selected.String(), "turn_ended  cancelled") != 1 {
 		t.Fatalf("handover = %s", selected.String())
 	}
 	store.Close()
@@ -672,13 +672,13 @@ func TestCancelPendingDoesNotAdvanceBackendHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	wait(t, r, "next")
-	var history, cancellation bool
+	var history, pendingEvent bool
 	for _, e := range catchUp {
 		history = history || e.Kind == faden.UserMessage && e.Text == "original history"
-		cancellation = cancellation || e.RequestID == "pending" && e.Kind == faden.TurnEnded && e.Text == "cancelled"
+		pendingEvent = pendingEvent || e.RequestID == "pending"
 	}
-	if !history || !cancellation {
-		t.Fatalf("handover lost history or cancellation: %+v", catchUp)
+	if !history || pendingEvent {
+		t.Fatalf("handover lost history or shows the never-started turn: %+v", catchUp)
 	}
 }
 

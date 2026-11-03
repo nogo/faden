@@ -59,15 +59,7 @@ func (r *Runner) catchUp(a *Attempt, events []Event) error {
 				return err
 			}
 			name = turn.Backend
-			// A queued cancellation records an event without giving its
-			// backend any history. It cannot advance a handover boundary.
-			if turn.Attempts == 0 && turn.Status == Cancelled {
-				name = ""
-			}
 			backends[e.RequestID] = name
-		}
-		if name == "" {
-			continue
 		}
 		previous = name
 		if name == t.Backend {
@@ -252,13 +244,18 @@ func (r *Runner) Cancel(ctx context.Context, requestID string) (Turn, error) {
 		r.mu.Unlock()
 		return t, nil
 	}
-	_, err = r.store.AppendEvent(ctx, Event{Session: t.Session, RequestID: requestID, Kind: TurnEnded, Text: "cancelled"})
-	if err != nil {
-		r.mu.Unlock()
-		return Turn{}, fmt.Errorf("faden: cancel event %s: %w", requestID, err)
-	}
-	r.notify(t.Session)
 	running := t.Status == Running
+	// Only a turn that started has work in the thread to cut off. A pending
+	// turn leaves no event, so no reader of the thread meets a request that
+	// ended without its user message.
+	if running {
+		_, err = r.store.AppendEvent(ctx, Event{Session: t.Session, RequestID: requestID, Kind: TurnEnded, Text: "cancelled"})
+		if err != nil {
+			r.mu.Unlock()
+			return Turn{}, fmt.Errorf("faden: cancel event %s: %w", requestID, err)
+		}
+		r.notify(t.Session)
+	}
 	t.Status = Cancelled
 	if err := r.store.SaveTurn(ctx, t); err != nil {
 		r.mu.Unlock()

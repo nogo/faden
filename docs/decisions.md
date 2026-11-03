@@ -248,7 +248,9 @@ Rejected: the runner waits for the reset and retries itself.
 
 **`Runner.Cancel(ctx, requestID)` stores a final `Cancelled` status before stopping the backend.** Pending turns never start; running turns receive context cancellation and `Backend.Stop`. Done, failed and cancelled turns return unchanged. The session worker waits for the attempt to return before starting the next turn. A stored cancellation wins over completion and restart.
 
-**The thread records cancellation as `TurnEnded` with text `cancelled`.** This uses the existing event that handover and `read_thread` already expose. Codex sends `turn/interrupt` with its thread and turn IDs before cancelling the runtime context. Claude and llama use context cancellation and the runtime; Claude's control protocol stays out of scope.
+~~**The thread records cancellation as `TurnEnded` with text `cancelled`.**~~ *Changed 2026-11-03: a pending turn left an event for a request that never ran, and `catchUp` needed a special case to skip it (design review of #34).*
+
+**The thread records the cancellation of a turn that started as `TurnEnded` with text `cancelled`.** A cancelled pending turn leaves no event: it has no work in the thread to cut off. This uses the existing event that handover and `read_thread` already expose. Codex sends `turn/interrupt` with its thread and turn IDs before cancelling the runtime context. Claude and llama use context cancellation and the runtime; Claude's control protocol stays out of scope.
 
 ## Decided 2026-11-02 — drain before the host stops (#29)
 
