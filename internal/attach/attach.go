@@ -17,7 +17,7 @@ import (
 // MaxImageBytes is the largest file sent as an image. A larger one goes as a path line.
 const MaxImageBytes = 10 << 20
 
-// Image is an open image file. Its bytes stay on disk until Write or a backend reads them.
+// Image is an open image file. Its bytes stay on disk until WriteBase64 reads them.
 type Image struct {
 	// Path is the path the host gave, relative to the attempt's directory.
 	Path string
@@ -125,8 +125,8 @@ func (s *Set) Close() {
 	}
 }
 
-// writeBase64 streams the image as base64 into w, so the file is never held whole.
-func (im Image) writeBase64(w io.Writer) error {
+// WriteBase64 streams the image as base64 into w, so the file is never held whole.
+func (im Image) WriteBase64(w io.Writer) error {
 	enc := base64.NewEncoder(base64.StdEncoding, w)
 	if _, err := io.Copy(enc, io.LimitReader(im.file, MaxImageBytes)); err != nil {
 		return err

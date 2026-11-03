@@ -6,7 +6,6 @@ package claude
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -161,15 +160,8 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 	}
 	defer files.Close()
 	prompt := attach.WithLines(handover.Prompt(t, a), files.Others)
-	var stdin io.Reader
-	if len(files.Images) == 0 {
-		input, _ := json.Marshal(map[string]any{"type": "user", "message": map[string]string{"role": "user", "content": prompt}})
-		stdin = bytes.NewReader(append(input, '\n'))
-	} else {
-		var stop func()
-		stdin, stop = attach.UserMessage(prompt, files.Images)
-		defer stop()
-	}
+	stdin, stop := userMessage(prompt, files.Images)
+	defer stop()
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	reader, writer := io.Pipe()
