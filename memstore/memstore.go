@@ -127,6 +127,13 @@ func (s *Store) Session(_ context.Context, id string) (faden.Session, error) {
 	return out, nil
 }
 
+// copyEvent returns e with its own buffers, so callers cannot change stored events.
+func copyEvent(e faden.Event) faden.Event {
+	e.Input = slices.Clone(e.Input)
+	e.Native = slices.Clone(e.Native)
+	return e
+}
+
 // AppendEvent implements faden.Store.
 func (s *Store) AppendEvent(_ context.Context, e faden.Event) (faden.Event, error) {
 	s.mu.Lock()
@@ -136,8 +143,9 @@ func (s *Store) AppendEvent(_ context.Context, e faden.Event) (faden.Event, erro
 		return faden.Event{}, fmt.Errorf("memstore: append event: session %s: %w", e.Session, faden.ErrNotFound)
 	}
 	e.Seq = int64(len(sess.events)) + 1
+	e = copyEvent(e)
 	sess.events = append(sess.events, e)
-	return e, nil
+	return copyEvent(e), nil
 }
 
 // Events implements faden.Store.
@@ -152,7 +160,11 @@ func (s *Store) Events(_ context.Context, id string, after int64) ([]faden.Event
 	if after >= int64(len(sess.events)) {
 		return nil, nil
 	}
-	return slices.Clone(sess.events[after:]), nil
+	out := make([]faden.Event, len(sess.events)-int(after))
+	for i, e := range sess.events[after:] {
+		out[i] = copyEvent(e)
+	}
+	return out, nil
 }
 
 // NextEvent implements faden.Store.
@@ -170,7 +182,7 @@ func (s *Store) NextEvent(ctx context.Context, id string, after int64) (*faden.E
 	if after >= int64(len(sess.events)) {
 		return nil, nil
 	}
-	e := sess.events[after]
+	e := copyEvent(sess.events[after])
 	return &e, nil
 }
 

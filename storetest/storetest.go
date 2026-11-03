@@ -174,6 +174,59 @@ func Run(t *testing.T, newStorage func(t *testing.T) Storage) {
 		}
 	})
 
+	t.Run("EventBuffersAreNotSharedWithCallers", func(t *testing.T) {
+		for _, source := range []string{"input", "append result", "events", "next event"} {
+			t.Run(source, func(t *testing.T) {
+				s := newStorage(t).Open()
+				defer s.Close()
+				if _, err := s.SubmitTurn(ctx, turn("r1", "s1")); err != nil {
+					t.Fatal(err)
+				}
+				in := faden.Event{Session: "s1", RequestID: "r1", Kind: faden.ToolCall,
+					Input: json.RawMessage(`{"n":1}`), Native: json.RawMessage(`{"x":1}`)}
+				appended, err := s.AppendEvent(ctx, in)
+				if err != nil {
+					t.Fatal(err)
+				}
+				changed := in
+				switch source {
+				case "append result":
+					changed = appended
+				case "events":
+					events, err := s.Events(ctx, "s1", 0)
+					if err != nil || len(events) != 1 {
+						t.Fatalf("events = %+v, %v", events, err)
+					}
+					changed = events[0]
+				case "next event":
+					next, err := s.NextEvent(ctx, "s1", 0)
+					if err != nil || next == nil {
+						t.Fatalf("next event = %+v, %v", next, err)
+					}
+					changed = *next
+				}
+				copy(changed.Input, `{"n":9}`)
+				copy(changed.Native, `{"x":9}`)
+				check := func(e faden.Event) {
+					t.Helper()
+					if string(e.Input) != `{"n":1}` || string(e.Native) != `{"x":1}` {
+						t.Errorf("stored buffers: input = %s, native = %s", e.Input, e.Native)
+					}
+				}
+				events, err := s.Events(ctx, "s1", 0)
+				if err != nil || len(events) != 1 {
+					t.Fatalf("events = %+v, %v", events, err)
+				}
+				check(events[0])
+				next, err := s.NextEvent(ctx, "s1", 0)
+				if err != nil || next == nil {
+					t.Fatalf("next event = %+v, %v", next, err)
+				}
+				check(*next)
+			})
+		}
+	})
+
 	t.Run("LargeEventSurvivesReopen", func(t *testing.T) {
 		st := newStorage(t)
 		s := st.Open()
