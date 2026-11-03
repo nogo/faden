@@ -68,9 +68,16 @@ func (b *Backend) Stop(ctx context.Context, t faden.Turn) error {
 type cursor struct {
 	SessionID       string `json:"session_id"`
 	LastAssistantID string `json:"last_assistant_id,omitempty"`
+}
 
-	// Read from the stream, never stored: the reason Claude gave on an error
-	// message, and the quota limits it reported.
+// output reads what Claude prints during one run. It holds the cursor the
+// run saves, and what the run learns that is never stored: the error Claude
+// named on a message and the quota limits it reported.
+type output struct {
+	cursor   cursor
+	model    string // the turn's model, for a cost without a model breakdown
+	emit     func(faden.Event) error
+	addUsage func(faden.ModelUsage)
 	apiError string
 	limits   *quotaLimits
 }
@@ -84,9 +91,10 @@ type quotaLimits struct {
 // Run saves the session UUID before launching Claude, then stores completed
 // items and saves the cursor after assistant messages.
 func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error {
-	var c cursor
+	st := &output{model: t.Model, emit: func(e faden.Event) error { return a.Emit(ctx, e) }, addUsage: a.AddUsage}
+	c := &st.cursor
 	if raw := a.Cursor(); len(raw) > 0 {
-		if err := json.Unmarshal(raw, &c); err != nil {
+		if err := json.Unmarshal(raw, c); err != nil {
 			return fmt.Errorf("claude: cursor: %w", err)
 		}
 	}
@@ -177,7 +185,6 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 	}()
 	scan := bufio.NewScanner(reader)
 	scan.Buffer(make([]byte, 4096), 16*1024*1024)
-	emit := func(e faden.Event) error { return a.Emit(ctx, e) }
 	ended := false
 	var parseErr error
 	for scan.Scan() {
@@ -185,7 +192,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 			parseErr = err
 			break
 		}
-		end, err := parseLine(scan.Bytes(), &c, emit, a.AddUsage, t.Model)
+		end, err := st.line(scan.Bytes())
 		if err == nil && c.LastAssistantID != "" {
 			err = save()
 		}
@@ -225,7 +232,9 @@ type block struct {
 	IsError bool            `json:"is_error"`
 }
 
-func parseLine(line []byte, c *cursor, emit func(faden.Event) error, add func(faden.ModelUsage), model string) (bool, error) {
+// line reads one line of Claude's output. It reports true once the result
+// line has ended the turn.
+func (s *output) line(line []byte) (bool, error) {
 	var msg struct {
 		ModelUsage map[string]struct {
 			Input  int64   `json:"inputTokens"`
@@ -249,10 +258,10 @@ func parseLine(line []byte, c *cursor, emit func(faden.Event) error, add func(fa
 		return false, err
 	}
 	if msg.Error != "" {
-		c.apiError = msg.Error
+		s.apiError = msg.Error
 	}
 	if msg.QuotaLimits != nil {
-		c.limits = msg.QuotaLimits
+		s.limits = msg.QuotaLimits
 	}
 	if msg.Type == "result" {
 		models := make([]string, 0, len(msg.ModelUsage))
@@ -262,16 +271,16 @@ func parseLine(line []byte, c *cursor, emit func(faden.Event) error, add func(fa
 		sort.Strings(models)
 		for _, model := range models {
 			u := msg.ModelUsage[model]
-			add(faden.ModelUsage{Model: model, InputTokens: u.Input + u.Read + u.Write, OutputTokens: u.Output, CacheReadTokens: u.Read, CacheWriteTokens: u.Write, CostUSD: u.Cost})
+			s.addUsage(faden.ModelUsage{Model: model, InputTokens: u.Input + u.Read + u.Write, OutputTokens: u.Output, CacheReadTokens: u.Read, CacheWriteTokens: u.Write, CostUSD: u.Cost})
 		}
 		if len(models) == 0 && msg.TotalCost != 0 {
-			add(faden.ModelUsage{Model: model, CostUSD: msg.TotalCost})
+			s.addUsage(faden.ModelUsage{Model: s.model, CostUSD: msg.TotalCost})
 		}
-		if err := emit(faden.Event{Kind: faden.TurnEnded, Text: msg.Result}); err != nil {
+		if err := s.emit(faden.Event{Kind: faden.TurnEnded, Text: msg.Result}); err != nil {
 			return false, err
 		}
 		if msg.IsError {
-			return true, c.failure(msg.Result)
+			return true, s.failure(msg.Result)
 		}
 		return true, nil
 	}
@@ -279,7 +288,7 @@ func parseLine(line []byte, c *cursor, emit func(faden.Event) error, add func(fa
 		return false, nil
 	}
 	if msg.Type == "assistant" {
-		c.LastAssistantID = msg.Message.ID
+		s.cursor.LastAssistantID = msg.Message.ID
 	}
 	for _, v := range msg.Message.Content {
 		var e faden.Event
@@ -321,7 +330,7 @@ func parseLine(line []byte, c *cursor, emit func(faden.Event) error, add func(fa
 		default:
 			continue
 		}
-		if err := emit(e); err != nil {
+		if err := s.emit(e); err != nil {
 			return false, err
 		}
 	}
@@ -331,18 +340,18 @@ func parseLine(line []byte, c *cursor, emit func(faden.Event) error, add func(fa
 // failure names why an unsuccessful turn failed. Claude reports a quota stop
 // as error "rate_limit" or as rejected quota limits, and a missing login as
 // error "authentication_failed" or a "Not logged in" result.
-func (c *cursor) failure(result string) error {
-	if c.apiError == "rate_limit" || c.limits != nil && c.limits.Status == "rejected" {
+func (s *output) failure(result string) error {
+	if s.apiError == "rate_limit" || s.limits != nil && s.limits.Status == "rejected" {
 		q := &faden.QuotaError{}
-		if c.limits != nil {
-			q.LimitType = c.limits.RateLimitType
-			if c.limits.ResetsAt > 0 {
-				q.ResetsAt = time.Unix(int64(c.limits.ResetsAt), 0).UTC()
+		if s.limits != nil {
+			q.LimitType = s.limits.RateLimitType
+			if s.limits.ResetsAt > 0 {
+				q.ResetsAt = time.Unix(int64(s.limits.ResetsAt), 0).UTC()
 			}
 		}
 		return q
 	}
-	if c.apiError == "authentication_failed" || strings.HasPrefix(result, "Not logged in") {
+	if s.apiError == "authentication_failed" || strings.HasPrefix(result, "Not logged in") {
 		return &faden.UnavailableError{Reason: result}
 	}
 	return errors.New("Claude reported an unsuccessful turn")

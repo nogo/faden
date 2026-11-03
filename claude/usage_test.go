@@ -20,7 +20,7 @@ func TestResultUsage(t *testing.T) {
 		}
 		line += `}`
 		var got []faden.ModelUsage
-		end, err := parseLine([]byte(line), &cursor{}, func(faden.Event) error { return nil }, func(u faden.ModelUsage) { got = append(got, u) }, "alias")
+		end, err := (&output{model: "alias", emit: func(faden.Event) error { return nil }, addUsage: func(u faden.ModelUsage) { got = append(got, u) }}).line([]byte(line))
 		if !end || (err != nil) != failed || len(got) != 2 || got[0] != (faden.ModelUsage{Model: "invented-a", InputTokens: 60, OutputTokens: 5, CacheReadTokens: 20, CacheWriteTokens: 30, CostUSD: 0.25}) || got[1].CostUSD != 0.125 {
 			t.Fatalf("usage=%+v end=%v err=%v", got, end, err)
 		}
@@ -29,7 +29,7 @@ func TestResultUsage(t *testing.T) {
 
 func TestResultTotalCostFallback(t *testing.T) {
 	var got faden.ModelUsage
-	_, err := parseLine([]byte(`{"type":"result","total_cost_usd":0.25}`), &cursor{}, func(faden.Event) error { return nil }, func(u faden.ModelUsage) { got = u }, "invented")
+	_, err := (&output{model: "invented", emit: func(faden.Event) error { return nil }, addUsage: func(u faden.ModelUsage) { got = u }}).line([]byte(`{"type":"result","total_cost_usd":0.25}`))
 	if err != nil || got != (faden.ModelUsage{Model: "invented", CostUSD: 0.25}) {
 		t.Fatalf("usage=%+v err=%v", got, err)
 	}
@@ -80,10 +80,10 @@ func TestLiveUsage(t *testing.T) {
 
 func parseAll(t *testing.T, lines ...string) error {
 	t.Helper()
-	var c cursor
+	o := &output{emit: func(faden.Event) error { return nil }, addUsage: func(faden.ModelUsage) {}}
 	var err error
 	for _, line := range lines {
-		if _, err = parseLine([]byte(line), &c, func(faden.Event) error { return nil }, func(faden.ModelUsage) {}, ""); err != nil {
+		if _, err = o.line([]byte(line)); err != nil {
 			break
 		}
 	}

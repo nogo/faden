@@ -368,7 +368,7 @@ func TestFailedToolResultIsMarked(t *testing.T) {
 	var got []faden.Event
 	emit := func(e faden.Event) error { got = append(got, e); return nil }
 	line := `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"no such file","is_error":true},{"type":"tool_result","tool_use_id":"t2","content":"ok"}]}}`
-	if _, err := parseLine([]byte(line), &cursor{}, emit, func(faden.ModelUsage) {}, ""); err != nil {
+	if _, err := (&output{emit: emit, addUsage: func(faden.ModelUsage) {}}).line([]byte(line)); err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 2 || !got[0].Failed || got[0].Output != "no such file" || got[1].Failed {
