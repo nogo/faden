@@ -52,7 +52,8 @@ type Session struct {
 }
 
 // Turn is one user input and everything until the backend's final answer.
-// RequestID is unique per store.
+// RequestID is unique per store. The submission fixes every field but
+// Progress, which changes while the turn runs.
 type Turn struct {
 	RequestID string `json:"requestId"`
 	Session   string `json:"session"`
@@ -61,20 +62,28 @@ type Turn struct {
 	Context string `json:"context,omitempty"`
 	// Files are paths relative to the attempt's Setup.Dir. Only the paths are
 	// stored; a backend reads the bytes when it sends the turn.
-	Files    []string `json:"files,omitempty"`
-	Backend  string   `json:"backend"`
-	Model    string   `json:"model,omitempty"`
-	Status   Status   `json:"status"`
-	Attempts int      `json:"attempts"`
-	Error    string   `json:"error,omitempty"`
+	Files   []string  `json:"files,omitempty"`
+	Backend string    `json:"backend"`
+	Model   string    `json:"model,omitempty"`
+	Created time.Time `json:"created"`
+	Progress
+}
+
+// Progress is the part of a turn that changes while it runs. A store's
+// SubmitTurn starts a turn at Progress{Status: Pending}, and SaveTurn replaces
+// the whole Progress, so a store needs no change when a field is added here.
+type Progress struct {
+	Status   Status `json:"status"`
+	Attempts int    `json:"attempts"`
+	Error    string `json:"error,omitempty"`
 	// Failure says why a failed turn failed: "" for the agent or anything else,
 	// FailureQuota or FailureUnavailable. RetryAt and LimitType hold what the
 	// backend knew of a quota stop; they are zero when unknown.
-	Failure   FailureKind  `json:"failure,omitempty"`
-	RetryAt   time.Time    `json:"retryAt,omitempty"`
-	LimitType string       `json:"limitType,omitempty"`
-	Created   time.Time    `json:"created"`
-	Usage     []ModelUsage `json:"usage,omitempty"`
+	Failure   FailureKind `json:"failure,omitempty"`
+	RetryAt   time.Time   `json:"retryAt,omitempty"`
+	LimitType string      `json:"limitType,omitempty"`
+	// Usage is the total per model over all attempts.
+	Usage []ModelUsage `json:"usage,omitempty"`
 }
 
 // ModelUsage is the tokens and cost reported by a backend for one model.
@@ -113,11 +122,11 @@ type Event struct {
 // Store keeps sessions, turns and events. A write the caller relies on is
 // durable when the method returns. Missing things are reported as ErrNotFound.
 type Store interface {
-	// SubmitTurn stores t as pending and returns it, creating its session
-	// if needed. If t.RequestID is known, it returns the existing turn and
-	// changes nothing.
+	// SubmitTurn stores t with Progress{Status: Pending} and returns it,
+	// creating its session if needed. If t.RequestID is known, it returns
+	// the existing turn and changes nothing.
 	SubmitTurn(ctx context.Context, t Turn) (Turn, error)
-	// SaveTurn replaces the status, attempts, error, failure kind and usage of a stored turn.
+	// SaveTurn replaces the Progress of a stored turn.
 	SaveTurn(ctx context.Context, t Turn) error
 	// Turn returns the turn with this request id.
 	Turn(ctx context.Context, requestID string) (Turn, error)

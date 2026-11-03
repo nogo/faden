@@ -72,6 +72,21 @@ func Run(t *testing.T, newStorage func(t *testing.T) Storage) {
 		}
 	})
 
+	t.Run("SubmitStartsEveryTurnAtPendingProgress", func(t *testing.T) {
+		s := newStorage(t).Open()
+		defer s.Close()
+		in := turn("r1", "s1")
+		in.Progress = faden.Progress{Status: faden.Done, Attempts: 5, Error: "old", Failure: faden.FailureQuota,
+			RetryAt: time.Unix(1800000000, 0).UTC(), LimitType: "five_hour", Usage: []faden.ModelUsage{{Model: "invented", InputTokens: 1}}}
+		if _, err := s.SubmitTurn(ctx, in); err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.Turn(ctx, "r1")
+		if err != nil || !reflect.DeepEqual(got.Progress, faden.Progress{Status: faden.Pending}) {
+			t.Fatalf("submitted progress = %+v, %v", got.Progress, err)
+		}
+	})
+
 	t.Run("RequestIDReuseReturnsExistingTurn", func(t *testing.T) {
 		s := newStorage(t).Open()
 		defer s.Close()

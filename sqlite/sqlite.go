@@ -134,8 +134,7 @@ func (s *Store) SubmitTurn(ctx context.Context, t faden.Turn) (faden.Turn, error
 		if t.RequestID == "" || t.Session == "" {
 			return errors.New("request id and session are required")
 		}
-		t.Status, t.Attempts, t.Error = faden.Pending, 0, ""
-		t.Failure, t.RetryAt, t.LimitType = "", time.Time{}, ""
+		t.Progress = faden.Progress{Status: faden.Pending}
 		t.Created = time.Now().UTC()
 		// Encode the turn before creating the session, including for host transactions.
 		data, err := json.Marshal(t)
@@ -172,9 +171,7 @@ func (s *Store) SaveTurn(ctx context.Context, t faden.Turn) error {
 		if err != nil {
 			return err
 		}
-		known.Status, known.Attempts, known.Error = t.Status, t.Attempts, t.Error
-		known.Failure, known.RetryAt, known.LimitType = t.Failure, t.RetryAt, t.LimitType
-		known.Usage = t.Usage
+		known.Progress = t.Progress
 		return s.put(ctx, `UPDATE `+s.prefix+`turns SET status=?2,data=?3 WHERE request_id=?1`, known, t.RequestID, t.Status)
 	})
 	if err != nil {

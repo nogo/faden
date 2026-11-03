@@ -58,8 +58,7 @@ func (s *Store) SubmitTurn(_ context.Context, t faden.Turn) (faden.Turn, error) 
 	if t.RequestID == "" || t.Session == "" {
 		return faden.Turn{}, errors.New("memstore: submit: request id and session are required")
 	}
-	t.Status, t.Attempts, t.Error = faden.Pending, 0, ""
-	t.Failure, t.RetryAt, t.LimitType = "", time.Time{}, ""
+	t.Progress = faden.Progress{Status: faden.Pending}
 	t.Created = time.Now().UTC()
 	t = copyTurn(t)
 	sess, ok := s.sessions[t.Session]
@@ -79,9 +78,8 @@ func (s *Store) SaveTurn(_ context.Context, t faden.Turn) error {
 	if !ok {
 		return fmt.Errorf("memstore: save turn %s: %w", t.RequestID, faden.ErrNotFound)
 	}
-	known.Status, known.Attempts, known.Error = t.Status, t.Attempts, t.Error
-	known.Failure, known.RetryAt, known.LimitType = t.Failure, t.RetryAt, t.LimitType
-	known.Usage = slices.Clone(t.Usage)
+	known.Progress = t.Progress
+	known.Usage = slices.Clone(t.Usage) // the caller keeps its own slice
 	s.turns[t.RequestID] = known
 	return nil
 }

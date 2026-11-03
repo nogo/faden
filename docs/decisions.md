@@ -293,3 +293,7 @@ Rejected: buffering completed events, which either blocks the turn or loses dura
 **It holds every event of every session until the store is dropped.** It suits a runner that lives for one job. A host that runs for months uses `jsonl` or `sqlite`.
 
 Rejected: a store that drops events and keeps only turns and cursors. It works for Claude and Codex on one backend, but breaks llama, handover, continuation and `read_thread`.
+
+## Decided 2026-11-03 — design review of #34
+
+- **`Turn.Progress` holds what changes while a turn runs:** status, attempts, error, failure kind, retry time, limit type and usage. `SubmitTurn` starts a turn at `Progress{Status: Pending}` and `SaveTurn` replaces the whole `Progress`, so a new field needs no store change. Before, each of the three stores listed these fields twice, and the lists disagreed: `SubmitTurn` cleared a caller's failure but kept its usage. `Progress` is embedded, so the stored JSON keys stay the same and old records load. `Turn` literals that set these fields still compile, because Go 1.27 accepts promoted fields in struct literals.
