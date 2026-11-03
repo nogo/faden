@@ -26,7 +26,6 @@ import (
 
 type session struct {
 	meta   faden.Session
-	turns  []string      // request ids, oldest first
 	events []faden.Event // event n is at events[n-1]
 }
 
@@ -68,7 +67,6 @@ func (s *Store) SubmitTurn(_ context.Context, t faden.Turn) (faden.Turn, error) 
 		sess = &session{meta: faden.Session{ID: t.Session, Created: t.Created}}
 		s.sessions[t.Session] = sess
 	}
-	sess.turns = append(sess.turns, t.RequestID)
 	s.turns[t.RequestID] = t
 	return copyTurn(t), nil
 }
