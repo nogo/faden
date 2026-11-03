@@ -60,15 +60,30 @@ func WithLines(text string, paths []string) string {
 // a file that cannot be read is an error. Close the Set when done.
 func Open(dir string, paths []string) (*Set, error) {
 	s := &Set{}
+	if len(paths) == 0 {
+		return s, nil
+	}
+	root, err := filepath.Abs(dir)
+	if err == nil {
+		root, err = filepath.EvalSymlinks(root)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("attach: working directory: %w", err)
+	}
 	for _, p := range paths {
 		if !filepath.IsLocal(p) {
 			s.Close()
 			return nil, fmt.Errorf("attach: %q is outside the working directory", p)
 		}
-		abs, err := filepath.Abs(filepath.Join(dir, p))
+		abs, err := filepath.EvalSymlinks(filepath.Join(root, p))
 		if err != nil {
 			s.Close()
 			return nil, fmt.Errorf("attach: %q: %w", p, err)
+		}
+		rel, err := filepath.Rel(root, abs)
+		if err != nil || !filepath.IsLocal(rel) {
+			s.Close()
+			return nil, fmt.Errorf("attach: %q is outside the working directory", p)
 		}
 		f, err := os.Open(abs)
 		if err != nil {

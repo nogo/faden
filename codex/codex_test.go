@@ -546,6 +546,15 @@ func TestFilesSendImageAsLocalImageAndTextFileAsPathLine(t *testing.T) {
 	if strings.Contains(line, "iVBOR") {
 		t.Fatal("image bytes were sent")
 	}
+	if err := os.Symlink(filepath.Join(dir, "fixture"), filepath.Join(work, "outside.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.Submit(t.Context(), faden.Submission{Session: "s", RequestID: "r2", Input: "look", Files: []string{"outside.txt"}, Backend: "codex"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := runner.Wait(t.Context(), "r2"); err != nil || got.Status != faden.Failed || !strings.Contains(got.Error, "outside the working directory") {
+		t.Fatalf("outside symlink turn = %+v, %v", got, err)
+	}
 }
 
 func TestContextIsSentWithEmptyInput(t *testing.T) {

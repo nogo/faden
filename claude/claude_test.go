@@ -483,4 +483,16 @@ func TestFilesSendImageAsBlockAndTextFileAsPathLine(t *testing.T) {
 	if events[0].Text != "look\nAttached file: shot.png\nAttached file: notes.txt\n" {
 		t.Fatalf("user message = %q", events[0].Text)
 	}
+	if err := os.WriteFile(filepath.Join(dir, "outside.png"), png, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "outside.png"), filepath.Join(work, "outside.png")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Submit(t.Context(), faden.Submission{Session: "s", RequestID: "r2", Input: "look", Files: []string{"outside.png"}, Backend: "claude"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := r.Wait(t.Context(), "r2"); err != nil || got.Status != faden.Failed || !strings.Contains(got.Error, "outside the working directory") {
+		t.Fatalf("outside symlink turn = %+v, %v", got, err)
+	}
 }

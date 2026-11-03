@@ -45,3 +45,49 @@ func TestOpenRefusesPathOutsideDirAndMissingFile(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenSymlinks(t *testing.T) {
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "work")
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	write(t, parent, "outside.png", png)
+	write(t, dir, "target.png", png)
+	for _, name := range []string{"outside", "inside"} {
+		target := filepath.Join(dir, "target.png")
+		if name == "outside" {
+			target = filepath.Join(parent, "outside.png")
+		}
+		if err := os.Symlink(target, filepath.Join(dir, name+".png")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"outside", "inside"} {
+		t.Run(name, func(t *testing.T) {
+			s, err := Open(dir, []string{name + ".png"})
+			if s != nil {
+				defer s.Close()
+			}
+			if name == "outside" {
+				if err == nil || !strings.Contains(err.Error(), "outside the working directory") {
+					t.Fatalf("Open outside symlink: set = %+v, error = %v", s, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(s.Images) != 1 || s.Images[0].Abs != filepath.Join(dir, "target.png") {
+				t.Fatalf("inside symlink images = %+v", s.Images)
+			}
+			var sent strings.Builder
+			if err := s.Images[0].WriteBase64(&sent); err != nil {
+				t.Fatal(err)
+			}
+			if sent.String() != base64.StdEncoding.EncodeToString(png) {
+				t.Fatal("inside symlink sent different bytes")
+			}
+		})
+	}
+}
