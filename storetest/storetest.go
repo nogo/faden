@@ -264,6 +264,36 @@ func Run(t *testing.T, newStorage func(t *testing.T) Storage) {
 		}
 	})
 
+	t.Run("FilesAreNotSharedWithCallers", func(t *testing.T) {
+		st := newStorage(t)
+		s := st.Open()
+		defer s.Close()
+		in := turn("r1", "s1")
+		in.Files = []string{"original.txt"}
+		submitted, err := s.SubmitTurn(ctx, in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		in.Files[0] = "changed-input.txt"
+		submitted.Files[0] = "changed-submitted.txt"
+		got, _ := s.Turn(ctx, "r1")
+		if !reflect.DeepEqual(got.Files, []string{"original.txt"}) {
+			t.Fatalf("files after changing submit slices = %v", got.Files)
+		}
+		got.Files[0] = "changed-turn.txt"
+		left, _ := s.Unfinished(ctx)
+		if len(left) != 1 || !reflect.DeepEqual(left[0].Files, []string{"original.txt"}) {
+			t.Fatalf("unfinished after changing Turn slice = %+v", left)
+		}
+		left[0].Files[0] = "changed-unfinished.txt"
+		again, _ := s.SubmitTurn(ctx, in)
+		again.Files[0] = "changed-resubmit.txt"
+		got, _ = s.Turn(ctx, "r1")
+		if !reflect.DeepEqual(got.Files, []string{"original.txt"}) {
+			t.Fatalf("files after changing returned slices = %v", got.Files)
+		}
+	})
+
 	t.Run("EverythingSurvivesReopen", func(t *testing.T) {
 		st := newStorage(t)
 		s := st.Open()
