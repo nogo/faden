@@ -41,13 +41,15 @@ type watcher struct {
 // A store read failure closes the channel. Watch reports an unknown session
 // before starting. Direct writes to the store are outside the live contract.
 func (r *Runner) Watch(ctx context.Context, session string, after int64) (<-chan Update, error) {
+	if _, err := r.store.Session(ctx, session); err != nil {
+		return nil, fmt.Errorf("faden: watch %s: %w", session, err)
+	}
+	// Register before replay: an event stored before this point is found by
+	// the replay, one stored after it wakes the watcher.
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.ctx.Err() != nil {
 		return nil, fmt.Errorf("faden: watch: runner closed")
-	}
-	if _, err := r.store.Session(ctx, session); err != nil {
-		return nil, fmt.Errorf("faden: watch %s: %w", session, err)
 	}
 	w := &watcher{session: session, wake: make(chan struct{}, 1), fragments: make(chan Fragment, fragmentSlots)}
 	if r.watchers == nil {
@@ -95,7 +97,8 @@ func (r *Runner) Watch(ctx context.Context, session string, after int64) (<-chan
 	return out, nil
 }
 
-// notify wakes watchers after a durable append. The caller holds r.mu.
+// notify wakes the session's watchers after a durable append. The caller
+// holds r.mu.
 func (r *Runner) notify(session string) {
 	for w := range r.watchers {
 		if w.session == session {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/nogo/faden/internal/attach"
 )
@@ -29,7 +30,12 @@ type Runner struct {
 	watchWG  sync.WaitGroup
 	watchers map[*watcher]struct{} // guarded by mu
 
-	mu       sync.Mutex // guards active, turns, changed, draining and fatal
+	// mu guards active, turns, changed, draining, fatal and watchers. It is
+	// held only for work in memory, with one exception: the status change of
+	// a turn (run starting it, finish, Cancel) reads and writes the store
+	// under mu, so a cancel and a finish cannot both win. An event append
+	// never holds it.
+	mu       sync.Mutex
 	turns    map[string]context.CancelFunc
 	active   map[string]bool // sessions with a worker
 	changed  chan struct{}   // closed and replaced when a turn reaches a final status
@@ -245,17 +251,6 @@ func (r *Runner) Cancel(ctx context.Context, requestID string) (Turn, error) {
 		return t, nil
 	}
 	running := t.Status == Running
-	// Only a turn that started has work in the thread to cut off. A pending
-	// turn leaves no event, so no reader of the thread meets a request that
-	// ended without its user message.
-	if running {
-		_, err = r.store.AppendEvent(ctx, Event{Session: t.Session, RequestID: requestID, Kind: TurnEnded, Text: "cancelled"})
-		if err != nil {
-			r.mu.Unlock()
-			return Turn{}, fmt.Errorf("faden: cancel event %s: %w", requestID, err)
-		}
-		r.notify(t.Session)
-	}
 	t.Status = Cancelled
 	if err := r.store.SaveTurn(ctx, t); err != nil {
 		r.mu.Unlock()
@@ -267,6 +262,12 @@ func (r *Runner) Cancel(ctx context.Context, requestID string) (Turn, error) {
 	}
 	r.mu.Unlock()
 	if running {
+		// Only a turn that started has work in the thread to cut off. A
+		// pending turn leaves no event, so no reader of the thread meets a
+		// request that ended without its user message.
+		if err := r.append(ctx, Event{Session: t.Session, RequestID: requestID, Kind: TurnEnded, Text: "cancelled", Time: time.Now().UTC()}); err != nil {
+			return t, fmt.Errorf("faden: cancel event %s: %w", requestID, err)
+		}
 		if b := r.backends[t.Backend]; b != nil {
 			if err := b.Stop(ctx, t); err != nil {
 				return t, fmt.Errorf("faden: stop cancelled turn %s: %w", requestID, err)
@@ -390,6 +391,18 @@ func (r *Runner) fail(err error) {
 	}
 	r.broadcast()
 	r.mu.Unlock()
+}
+
+// append stores e, then wakes the watchers of its session. It holds r.mu
+// only to wake them, never around the store write.
+func (r *Runner) append(ctx context.Context, e Event) error {
+	if _, err := r.store.AppendEvent(ctx, e); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	r.notify(e.Session)
+	r.mu.Unlock()
+	return nil
 }
 
 // broadcast wakes every Wait. The caller holds r.mu.

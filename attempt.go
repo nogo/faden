@@ -76,13 +76,9 @@ func (a *Attempt) Emit(ctx context.Context, e Event) error {
 		e.Time = time.Now().UTC()
 	}
 	if a.runner != nil {
-		a.runner.mu.Lock()
-		defer a.runner.mu.Unlock()
+		return a.runner.append(ctx, e)
 	}
 	_, err := a.store.AppendEvent(ctx, e)
-	if err == nil && a.runner != nil {
-		a.runner.notify(e.Session)
-	}
 	return err
 }
 
