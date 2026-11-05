@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"iter"
 	"time"
 )
 
@@ -137,8 +138,11 @@ type Store interface {
 	// AppendEvent stores e at the next sequence number of its session and
 	// returns it with Seq set.
 	AppendEvent(ctx context.Context, e Event) (Event, error)
-	// Events returns the events of a session with Seq above after, in order.
-	Events(ctx context.Context, session string, after int64) ([]Event, error)
+	// Events yields the events of a session with Seq above after, in order,
+	// holding few of them at a time. An unknown session or a failed read is
+	// yielded as the error, and ends the sequence. The store holds no lock
+	// between events, so the loop may call the store.
+	Events(ctx context.Context, session string, after int64) iter.Seq2[Event, error]
 	// NextEvent returns the first event above after, or nil when caught up.
 	// It reads at most one event, regardless of session length.
 	NextEvent(ctx context.Context, session string, after int64) (*Event, error)
@@ -146,6 +150,19 @@ type Store interface {
 	SetCursor(ctx context.Context, session, backend string, cursor json.RawMessage) error
 	// Close releases the store.
 	Close() error
+}
+
+// CollectEvents gathers what Store.Events or Attempt.Events yields into a
+// slice, for a reader that needs the whole range at once.
+func CollectEvents(events iter.Seq2[Event, error]) ([]Event, error) {
+	var out []Event
+	for e, err := range events {
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, nil
 }
 
 // Backend runs one turn of an agent.

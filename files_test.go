@@ -31,7 +31,7 @@ func TestFilesAreStoredAsPathsSentAgainOnContinuationAndShownInUserMessage(t *te
 	if sent.Attempts != 2 || sent.Input != "Continue where you left off." || !reflect.DeepEqual(sent.Files, files) {
 		t.Fatalf("continuation sent %+v, want the files again", sent)
 	}
-	events, err := store.Events(t.Context(), "s1", 0)
+	events, err := faden.CollectEvents(store.Events(t.Context(), "s1", 0))
 	if err != nil {
 		t.Fatal(err)
 	}

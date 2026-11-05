@@ -89,7 +89,7 @@ func TestSubmitRunsTurnAndStoresCursorAndEvents(t *testing.T) {
 	if got.Status != faden.Done || got.Attempts != 1 {
 		t.Fatalf("turn = %+v", got)
 	}
-	events, _ := store.Events(t.Context(), "s1", 0)
+	events, _ := faden.CollectEvents(store.Events(t.Context(), "s1", 0))
 	sess, _ := store.Session(t.Context(), "s1")
 	if len(events) != 2 || events[0].Kind != faden.UserMessage || events[0].Text != "hello" || events[1].Text != "re: hello" || events[1].RequestID != "r1" || string(sess.Cursors["fake"]) != `{"id":"c1"}` {
 		t.Fatalf("events = %+v, session = %+v", events, sess)
@@ -309,7 +309,7 @@ func TestKilledTurnFinishesAfterRestart(t *testing.T) {
 	if got.Status != faden.Done || got.Attempts != 2 || sent != "Continue where you left off." {
 		t.Fatalf("turn = %+v, sent %q", got, sent)
 	}
-	events, _ := store.Events(t.Context(), "s1", 0)
+	events, _ := faden.CollectEvents(store.Events(t.Context(), "s1", 0))
 	// The input is stored once; the continuation prompt is not stored as a user message.
 	if len(events) != 3 || events[0].Kind != faden.UserMessage || events[0].Text != "work" || events[1].Text != "one" || events[2].Text != "two" {
 		t.Fatalf("events = %+v", events)
@@ -570,7 +570,7 @@ func TestCancelPendingAndRunning(t *testing.T) {
 	if !reflect.DeepEqual(stopped, []string{"running"}) {
 		t.Fatalf("Stop = %v", stopped)
 	}
-	events, err := store.Events(t.Context(), "s", 0)
+	events, err := faden.CollectEvents(store.Events(t.Context(), "s", 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -781,7 +781,7 @@ func TestRunnerRunsTurnsOnMemstore(t *testing.T) {
 		t.Fatalf("turn = %+v", got)
 	}
 	var texts []string
-	events, _ := store.Events(t.Context(), "s1", 0)
+	events, _ := faden.CollectEvents(store.Events(t.Context(), "s1", 0))
 	for _, e := range events {
 		texts = append(texts, e.Text)
 	}

@@ -27,7 +27,7 @@ func TestContextStaysOutsideThread(t *testing.T) {
 		t.Fatal(err)
 	}
 	wait(t, r, "r1")
-	events, err := store.Events(t.Context(), "s1", 0)
+	events, err := faden.CollectEvents(store.Events(t.Context(), "s1", 0))
 	if err != nil {
 		t.Fatal(err)
 	}

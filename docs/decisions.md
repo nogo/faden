@@ -131,7 +131,7 @@ Memory is a requirement, not a tuning step. A host keeps faden running for month
 
 - **Claude Code and Codex events carry no native payload.** Both CLIs keep their own session, and nothing in faden read their native lines. What faden must know lives in the normalized fields: the store still tracks every completed item, and a killed turn continues from those fields (#14). Only llama.cpp keeps a native payload, because it rebuilds its transcript from it. Measured on one invented Claude turn with a 21 KB tool output (`/tmp/fadenmeasure`): 69.7 KB stored before, of which 45.3 KB native. The lost parts are the CLI's envelope: ids, token usage, cost, and Claude's second copy of a tool's output. Rejected: one native line per item, which still doubled every tool output. Measured after the change: `FADEN_LIVE=1 go test -v ./claude ./codex -run TestLiveResumeAfterKill` answered `FIRST_FILE_KNOWN` on both CLIs, so the continuation needs no native payload. One run each.
 - **`jsonl` keeps events in the file, not in memory.** It holds one file offset per event and reads events when asked. Sessions, turns and cursors stay in memory. Open streams the file line by line. Measured on 2,000 events of 8 KB: 17.9 MB held after open before, 24 KB after.
-- **The runner reads a session's events once per turn,** not once for each of catch-up, continuation and the input check.
+- ~~**The runner reads a session's events once per turn,** not once for each of catch-up, continuation and the input check.~~ *Changed 2026-11-05: one read still held the whole session in memory on every turn. See "Decided 2026-11-05 — events as a stream".*
 - **A handover renders only the events it selects,** and copies at most what the 240-rune cut keeps. Measured on 500 tool outputs of 100 KB: 152 MB allocated per selection before, 66 KB after.
 - **`read_thread` has one owner, `handover.ReadThread`,** used by the llama tool and the MCP server.
 
@@ -311,16 +311,16 @@ Measured with `Local.Run` of `head -c N /dev/zero` (peak RSS, `VmHWM`): 200 MB o
 
 Rejected: a capped writer inside `bash` only, which left stderr unbounded; stderr in a separate pipe, which misses failures that test runners print to stdout and loses the order of lines.
 
-## Decided 2026-11-05 — command output cap
-
-**`faden.Command.MaxOutput` bounds `Result.Output`, keeping the start and the end.** `Local` and `container` keep the first third and the last two thirds and put `[N bytes left out]` between them; both cuts fall between runes. The command still runs to its end. Zero keeps everything, as before. A host's own runtime that ignores the field still works, without the bound.
-
-**`bash` keeps its last words and its exit code.** A build or test run prints its errors and summary last, often on stdout, so the end matters as much as the start. `bash` asks for `Config.MaxOutput` less 80 bytes, the room for the left-out line, the exit-code line and an `error: ` prefix, so the loop's cut no longer removes them. The loop's cut stays for every other tool. Claude and Codex set 64 KiB on the stderr they buffer; nothing reads it yet.
-
-Measured with `Local.Run` of `head -c N /dev/zero` (peak RSS, `VmHWM`): 200 MB of output held 536 MB before, 10 MB with a 12,001-byte cap.
-
-Rejected: a capped writer inside `bash` only, which left stderr unbounded; stderr in a separate pipe, which misses failures that test runners print to stdout and loses the order of lines.
-
 ## Decided 2026-11-05 — read_thread reads one event at a time
 
 **`handover.Events` (and `mcp.Events`, now an alias of it) is `NextEvent`, not `Events`.** `ReadThread` read every event after `from` to answer at most 100, so a read from 1 decoded the whole session. It now holds one event at a time and reads at most 101. A `faden.Store` already has `NextEvent`, so a host that passes its store changes nothing. `Attempt.NextEvent` serves llama's tool. `TestReadThreadReadsOnlyWhatItAnswers` guards the bound.
+
+## Decided 2026-11-05 — events as a stream
+
+**`Store.Events` and `Attempt.Events` return `iter.Seq2[Event, error]`.** A store yields events one by one and holds no lock or connection between them, so a loop may call the store. jsonl copies the session's offsets under its lock and reads the file without it; sqlite reads pages of 64; memstore yields copies. An unknown session or a failed read is yielded as the error. `faden.CollectEvents` gathers the sequence for a reader that needs the whole range, as llama's transcript rebuild does. This breaks every `Store` implementer and every caller once.
+
+**The runner reads a session in one pass per turn and keeps little of it:** the last sequence number of each other turn, this turn's handover marker and user-message flag, and this turn's events only for a continuation prompt. Only a handover reads again, from its boundary on. Without a handover the runner looks up the backend of one turn, not of every turn.
+
+Measured with an idle backend on a jsonl session of 2,000 events of 8 KB (peak RSS, `VmHWM`, two runs each): 31–35 MB before, 16–17.5 MB after. `storetest` checks order across pages, a store call inside the loop (sqlite runs with one connection), and an early stop.
+
+Rejected: one `NextEvent` call per event, which needs no interface change but makes sqlite run two queries per event at every turn start. Not changed: llama still collects the whole session, because it sends its transcript to the model; a handover still holds the events it has not seen.

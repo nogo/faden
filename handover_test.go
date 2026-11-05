@@ -107,7 +107,7 @@ func TestHandoverAcrossAdapters(t *testing.T) {
 	if strings.Contains(prompt, "first question") || strings.Contains(prompt, "Claude answer") {
 		t.Fatalf("repeated seen messages: %s", prompt)
 	}
-	events, err := store.Events(context.Background(), "s", 0)
+	events, err := faden.CollectEvents(store.Events(context.Background(), "s", 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +206,7 @@ func TestHandoverAfterSilentBackend(t *testing.T) {
 			t.Fatalf("%+v", turn)
 		}
 	}
-	events, err := store.Events(context.Background(), "s", 0)
+	events, err := faden.CollectEvents(store.Events(context.Background(), "s", 0))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -67,7 +67,7 @@ func runFileTools(t *testing.T, rt faden.Runtime, dir string, calls ...fileCall)
 	if got, err := r.Wait(t.Context(), "r1"); err != nil || got.Status != faden.Done {
 		t.Fatalf("turn = %+v, %v", got, err)
 	}
-	events, _ := store.Events(t.Context(), "s1", 0)
+	events, _ := faden.CollectEvents(store.Events(t.Context(), "s1", 0))
 	var results []faden.Event
 	for _, e := range events {
 		if e.Kind == faden.ToolResult {

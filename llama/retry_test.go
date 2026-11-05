@@ -56,7 +56,7 @@ func TestHostedHeaderAndRetryStatus(t *testing.T) {
 			if w := waits(); status == 429 && (len(w) != 1 || w[0] != 2*time.Second) {
 				t.Fatalf("waits = %v, want the 2s of Retry-After", w)
 			}
-			events, err := store.Events(t.Context(), "s1", 0)
+			events, err := faden.CollectEvents(store.Events(t.Context(), "s1", 0))
 			if err != nil {
 				t.Fatal(err)
 			}

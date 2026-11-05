@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"maps"
 	"net/url"
 	"os"
@@ -361,41 +362,61 @@ func (s *Store) AppendEvent(_ context.Context, e faden.Event) (faden.Event, erro
 	return e, nil
 }
 
-// Events implements faden.Store.
-func (s *Store) Events(_ context.Context, id string, after int64) ([]faden.Event, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	sess, ok := s.sessions[id]
-	if !ok {
-		return nil, fmt.Errorf("jsonl: events: session %s: %w", id, faden.ErrNotFound)
-	}
-	after = max(after, 0)
-	if after >= int64(len(sess.events)) {
-		return nil, nil
-	}
-	offsets := sess.events[after:]
-	out := make([]faden.Event, 0, len(offsets))
-	start := offsets[0]
-	_, err := lines(io.NewSectionReader(sess.file, start, sess.size-start), start, func(off int64, line []byte) error {
-		if len(out) == len(offsets) || off != offsets[len(out)] {
-			return nil // a turn, session or cursor record
+// Events implements faden.Store. It takes the lock only to copy the
+// session's offsets: lines below the file size it saw never change, so it
+// reads them while appends go on.
+func (s *Store) Events(ctx context.Context, id string, after int64) iter.Seq2[faden.Event, error] {
+	return func(yield func(faden.Event, error) bool) {
+		s.mu.Lock()
+		sess, ok := s.sessions[id]
+		var offsets []int64
+		var file *os.File
+		var size int64
+		if ok {
+			after = max(after, 0)
+			if after < int64(len(sess.events)) {
+				offsets = sess.events[after:len(sess.events):len(sess.events)]
+			}
+			file, size = sess.file, sess.size
 		}
-		var rec struct {
-			Event faden.Event `json:"event"`
+		s.mu.Unlock()
+		if !ok {
+			yield(faden.Event{}, fmt.Errorf("jsonl: events: session %s: %w", id, faden.ErrNotFound))
+			return
 		}
-		if err := json.Unmarshal(line, &rec); err != nil {
-			return err
+		if len(offsets) == 0 {
+			return
 		}
-		out = append(out, rec.Event)
-		return nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("jsonl: events: session %s: %w", id, err)
+		errStop := errors.New("stop")
+		n := 0
+		start := offsets[0]
+		_, err := lines(io.NewSectionReader(file, start, size-start), start, func(off int64, line []byte) error {
+			if n == len(offsets) || off != offsets[n] {
+				return nil // a turn, session or cursor record
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			var rec struct {
+				Event faden.Event `json:"event"`
+			}
+			if err := json.Unmarshal(line, &rec); err != nil {
+				return err
+			}
+			n++
+			if !yield(rec.Event, nil) {
+				return errStop
+			}
+			return nil
+		})
+		switch {
+		case errors.Is(err, errStop):
+		case err != nil:
+			yield(faden.Event{}, fmt.Errorf("jsonl: events: session %s: %w", id, err))
+		case n != len(offsets):
+			yield(faden.Event{}, fmt.Errorf("jsonl: events: session %s: file ends before event %d", id, int(after)+n+1))
+		}
 	}
-	if len(out) != len(offsets) {
-		return nil, fmt.Errorf("jsonl: events: session %s: file ends before event %d", id, int(after)+len(out)+1)
-	}
-	return out, nil
 }
 
 // SetCursor implements faden.Store.

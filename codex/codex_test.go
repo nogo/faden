@@ -129,7 +129,7 @@ func TestTurnThenResumeWithoutPrompt(t *testing.T) {
 	if err != nil || string(sess.Cursors["codex"]) != `{"thread_id":"thr_invented"}` {
 		t.Fatalf("cursor: %s, %v", sess.Cursors["codex"], err)
 	}
-	events, err := store.Events(t.Context(), "s", 0)
+	events, err := faden.CollectEvents(store.Events(t.Context(), "s", 0))
 	if err != nil {
 		t.Fatal(err)
 	}

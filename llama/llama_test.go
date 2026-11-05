@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"iter"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -134,7 +135,7 @@ func TestTurnStoresAnswersCallsAndResultsInOrder(t *testing.T) {
 	if got.Status != faden.Done {
 		t.Fatalf("turn = %+v", got)
 	}
-	events, _ := store.Events(t.Context(), "s1", 0)
+	events, _ := faden.CollectEvents(store.Events(t.Context(), "s1", 0))
 	var kinds []faden.Kind
 	for _, e := range events {
 		kinds = append(kinds, e.Kind)
@@ -287,7 +288,7 @@ func TestReadThreadReturnsRangeAndRefusesOtherSession(t *testing.T) {
 	rec := &recorder{Store: store}
 	b, _ := llama.New(llama.Config{URL: srv.URL + "/v1"})
 	run2(t, rec, b)
-	events, _ := store.Events(t.Context(), "s1", 0)
+	events, _ := faden.CollectEvents(store.Events(t.Context(), "s1", 0))
 	var result string
 	for _, e := range events {
 		if e.Kind == faden.ToolResult {
@@ -310,7 +311,7 @@ func TestReadThreadReturnsRangeAndRefusesOtherSession(t *testing.T) {
 	rec2 := &recorder{Store: store2}
 	b2, _ := llama.New(llama.Config{URL: srv2.URL + "/v1"})
 	run2(t, rec2, b2)
-	events, _ = store2.Events(t.Context(), "s1", 0)
+	events, _ = faden.CollectEvents(store2.Events(t.Context(), "s1", 0))
 	for _, e := range events {
 		if e.Kind == faden.ToolResult && !strings.HasPrefix(e.Output, "error: only this conversation") {
 			t.Fatalf("result = %q, want a refusal", e.Output)
@@ -328,7 +329,7 @@ type recorder struct {
 	sessions map[string]int
 }
 
-func (r *recorder) Events(ctx context.Context, session string, after int64) ([]faden.Event, error) {
+func (r *recorder) Events(ctx context.Context, session string, after int64) iter.Seq2[faden.Event, error] {
 	r.mu.Lock()
 	if r.sessions == nil {
 		r.sessions = map[string]int{}
@@ -413,7 +414,7 @@ func TestKilledBetweenBashCallAndResultDoesNotRunBashAgain(t *testing.T) {
 	stdin.Close() // lets the orphaned bash exit
 
 	store := openStore(t, dir)
-	events, _ := store.Events(t.Context(), "s1", 0)
+	events, _ := faden.CollectEvents(store.Events(t.Context(), "s1", 0))
 	if last := events[len(events)-1]; last.Kind != faden.ToolCall || last.Tool != "bash" {
 		t.Fatalf("last stored event before restart = %+v, want the bash call", last)
 	}
@@ -450,7 +451,7 @@ func TestBashRunsThroughRuntimeInItsDirectory(t *testing.T) {
 	store2 := openStore(t, seed2)
 	b, _ := llama.New(llama.Config{URL: srv.URL + "/v1", Runtime: faden.Local{PIDDir: dir, Dir: dir}})
 	run2(t, store2, b)
-	events, _ := store2.Events(t.Context(), "s1", 0)
+	events, _ := faden.CollectEvents(store2.Events(t.Context(), "s1", 0))
 	for _, e := range events {
 		if e.Kind == faden.ToolResult {
 			resolved, _ := filepath.EvalSymlinks(dir)
@@ -515,7 +516,7 @@ func TestCallIDReusedInLaterTurnRunsAgain(t *testing.T) {
 	if runs != 2 {
 		t.Fatalf("tool ran %d times, want 2", runs)
 	}
-	events, _ := store.Events(t.Context(), "s1", 0)
+	events, _ := faden.CollectEvents(store.Events(t.Context(), "s1", 0))
 	var calls, results int
 	for _, e := range events {
 		switch e.Kind {
@@ -618,7 +619,7 @@ func TestPrepareSystemComesFirstUnstoredAndBashUsesDirAndEnv(t *testing.T) {
 			t.Fatalf("request %d messages = %+v, want the system message first", i, req.Messages)
 		}
 	}
-	events, _ := store.Events(t.Context(), "s1", 0)
+	events, _ := faden.CollectEvents(store.Events(t.Context(), "s1", 0))
 	want, _ := filepath.EvalSymlinks(work)
 	var result string
 	for _, e := range events {
@@ -720,7 +721,7 @@ func TestContextSentWithoutEnteringEventsAndSentAfterReopen(t *testing.T) {
 					t.Fatalf("messages = %+v", req.Messages)
 				}
 			}
-			events, err := store.Events(t.Context(), "s1", 0)
+			events, err := faden.CollectEvents(store.Events(t.Context(), "s1", 0))
 			if err != nil {
 				t.Fatal(err)
 			}

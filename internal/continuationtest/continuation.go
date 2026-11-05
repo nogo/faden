@@ -100,7 +100,7 @@ func Continue(t *testing.T, dir, name string, factory Factory) []faden.Event {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	prior, err := store.Events(t.Context(), "s", 0)
+	prior, err := faden.CollectEvents(store.Events(t.Context(), "s", 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func Continue(t *testing.T, dir, name string, factory Factory) []faden.Event {
 	if err != nil || turn.Status != faden.Done || turn.Attempts != 2 {
 		t.Fatalf("turn: %+v, error: %v", turn, err)
 	}
-	events, err := store.Events(ctx, "s", after)
+	events, err := faden.CollectEvents(store.Events(ctx, "s", after))
 	if err != nil {
 		t.Fatal(err)
 	}

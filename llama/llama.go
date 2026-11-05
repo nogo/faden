@@ -265,7 +265,7 @@ func (tr *transcript) needsModel() bool {
 // Run implements faden.Backend. It saves no cursor: the events are the
 // transcript.
 func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error {
-	events, err := a.Events(ctx, 0)
+	events, err := faden.CollectEvents(a.Events(ctx, 0))
 	if err != nil {
 		return fmt.Errorf("llama: read session %s: %w", t.Session, err)
 	}

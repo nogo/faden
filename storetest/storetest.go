@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -145,7 +146,7 @@ func Run(t *testing.T, newStorage func(t *testing.T) Storage) {
 				t.Fatalf("unexpected next: %+v", e)
 			}
 		}
-		got, err := s.Events(ctx, "s1", 0)
+		got, err := faden.CollectEvents(s.Events(ctx, "s1", 0))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -154,9 +155,48 @@ func Run(t *testing.T, newStorage func(t *testing.T) Storage) {
 				t.Fatalf("event %d = %+v", i, got[i])
 			}
 		}
-		rest, _ := s.Events(ctx, "s1", 2)
+		rest, _ := faden.CollectEvents(s.Events(ctx, "s1", 2))
 		if len(rest) != 1 || rest[0].Text != "three" {
 			t.Fatalf("events after 2 = %+v", rest)
+		}
+	})
+
+	t.Run("EventsYieldsManyInOrderAndAllowsStoreCallsInTheLoop", func(t *testing.T) {
+		s := newStorage(t).Open()
+		defer s.Close()
+		s.SubmitTurn(ctx, turn("r1", "s1"))
+		const n = 150 // more than one page of a store that reads in pages
+		for i := range n {
+			if _, err := s.AppendEvent(ctx, faden.Event{Session: "s1", RequestID: "r1", Kind: faden.AssistantMessage, Text: fmt.Sprint(i)}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var seen int64
+		for e, err := range s.Events(ctx, "s1", 0) {
+			if err != nil {
+				t.Fatal(err)
+			}
+			if e.Seq != seen+1 || e.Text != fmt.Sprint(seen) {
+				t.Fatalf("event %d = %+v", seen+1, e)
+			}
+			seen = e.Seq
+			if _, err := s.Turn(ctx, "r1"); err != nil {
+				t.Fatalf("store call inside the loop: %v", err)
+			}
+			if seen == 100 {
+				break
+			}
+		}
+		if seen != 100 {
+			t.Fatalf("saw %d events, want 100", seen)
+		}
+		if _, err := s.AppendEvent(ctx, faden.Event{Session: "s1", RequestID: "r1", Kind: faden.TurnEnded}); err != nil {
+			t.Fatalf("append after an early stop: %v", err)
+		}
+		for _, err := range s.Events(ctx, "nope", 0) {
+			if !errors.Is(err, faden.ErrNotFound) {
+				t.Fatalf("unknown session err = %v, want ErrNotFound", err)
+			}
 		}
 	})
 
@@ -167,7 +207,7 @@ func Run(t *testing.T, newStorage func(t *testing.T) Storage) {
 		native := json.RawMessage(`{"type":"tool_use","id":"t1"}`)
 		input := json.RawMessage(`{"cmd":"ls"}`)
 		s.AppendEvent(ctx, faden.Event{Session: "s1", RequestID: "r1", Kind: faden.ToolCall, Tool: "bash", Action: "run", Input: input, Output: "o", Failed: true, Native: native})
-		got, _ := s.Events(ctx, "s1", 0)
+		got, _ := faden.CollectEvents(s.Events(ctx, "s1", 0))
 		if len(got) != 1 || string(got[0].Native) != string(native) || string(got[0].Input) != string(input) ||
 			got[0].Tool != "bash" || got[0].Action != "run" || got[0].Output != "o" || !got[0].Failed {
 			t.Fatalf("event = %+v", got)
@@ -193,7 +233,7 @@ func Run(t *testing.T, newStorage func(t *testing.T) Storage) {
 				case "append result":
 					changed = appended
 				case "events":
-					events, err := s.Events(ctx, "s1", 0)
+					events, err := faden.CollectEvents(s.Events(ctx, "s1", 0))
 					if err != nil || len(events) != 1 {
 						t.Fatalf("events = %+v, %v", events, err)
 					}
@@ -213,7 +253,7 @@ func Run(t *testing.T, newStorage func(t *testing.T) Storage) {
 						t.Errorf("stored buffers: input = %s, native = %s", e.Input, e.Native)
 					}
 				}
-				events, err := s.Events(ctx, "s1", 0)
+				events, err := faden.CollectEvents(s.Events(ctx, "s1", 0))
 				if err != nil || len(events) != 1 {
 					t.Fatalf("events = %+v, %v", events, err)
 				}
@@ -239,7 +279,7 @@ func Run(t *testing.T, newStorage func(t *testing.T) Storage) {
 
 		s = st.Open()
 		defer s.Close()
-		events, err := s.Events(ctx, "s1", 0)
+		events, err := faden.CollectEvents(s.Events(ctx, "s1", 0))
 		if err != nil || len(events) != 2 || events[0].Output != large || events[1].Text != "after" || events[1].Seq != 2 {
 			t.Fatalf("events after reopen: %d, %v", len(events), err)
 		}
@@ -370,7 +410,7 @@ func Run(t *testing.T, newStorage func(t *testing.T) Storage) {
 			got.Failure != r1.Failure || !got.RetryAt.Equal(r1.RetryAt) || got.LimitType != r1.LimitType {
 			t.Fatalf("turn = %+v", got)
 		}
-		events, _ := s.Events(ctx, "s1", 0)
+		events, _ := faden.CollectEvents(s.Events(ctx, "s1", 0))
 		sess, _ := s.Session(ctx, "s1")
 		if len(events) != 1 || events[0].Text != "hi" || string(sess.Cursors["a"]) != `{"n":1}` {
 			t.Fatalf("events = %+v, session = %+v", events, sess)
@@ -429,7 +469,7 @@ func Run(t *testing.T, newStorage func(t *testing.T) Storage) {
 		st.Tear()
 
 		s = st.Open()
-		events, _ := s.Events(ctx, "s1", 0)
+		events, _ := faden.CollectEvents(s.Events(ctx, "s1", 0))
 		if len(events) != 1 || events[0].Text != "kept" {
 			t.Fatalf("events after tear = %+v", events)
 		}
@@ -440,7 +480,7 @@ func Run(t *testing.T, newStorage func(t *testing.T) Storage) {
 
 		s = st.Open()
 		defer s.Close()
-		events, _ = s.Events(ctx, "s1", 0)
+		events, _ = faden.CollectEvents(s.Events(ctx, "s1", 0))
 		if len(events) != 2 || events[1].Text != "after" || events[1].Seq != 2 {
 			t.Fatalf("events after tear and write = %+v", events)
 		}

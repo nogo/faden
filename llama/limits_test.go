@@ -57,7 +57,7 @@ func bigTool() llama.Tool {
 
 func resultOutputs(t *testing.T, store faden.Store) []string {
 	t.Helper()
-	events, err := store.Events(t.Context(), "s1", 0)
+	events, err := faden.CollectEvents(store.Events(t.Context(), "s1", 0))
 	if err != nil {
 		t.Fatal(err)
 	}

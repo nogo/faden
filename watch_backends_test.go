@@ -122,7 +122,7 @@ func TestWatchBackendFragments(t *testing.T) {
 			if turn, err := r.Wait(ctx, "r"); err != nil || turn.Status != faden.Done {
 				t.Fatalf("turn: %+v %v", turn, err)
 			}
-			events, err := store.Events(ctx, "s", 0)
+			events, err := faden.CollectEvents(store.Events(ctx, "s", 0))
 			if err != nil || len(events) != 2 {
 				t.Fatalf("stored: %+v %v", events, err)
 			}

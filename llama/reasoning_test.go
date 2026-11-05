@@ -29,7 +29,7 @@ func TestReasoningStaysNative(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("invented reasoning run: %d stored bytes", info.Size())
-	events, err := store.Events(t.Context(), "s1", 0)
+	events, err := faden.CollectEvents(store.Events(t.Context(), "s1", 0))
 	if err != nil {
 		t.Fatal(err)
 	}

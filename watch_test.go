@@ -56,7 +56,7 @@ func TestWatchReplayLiveAndSlowReader(t *testing.T) {
 		t.Fatalf("turn: %+v, %v", turn, err)
 	}
 	// The turn has completed without a single read from the watcher.
-	events, err := store.Events(ctx, "s", 1)
+	events, err := faden.CollectEvents(store.Events(ctx, "s", 1))
 	if err != nil {
 		t.Fatal(err)
 	}

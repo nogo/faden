@@ -86,7 +86,7 @@ func TestTurns(t *testing.T) {
 	if len(c.SessionID) != 36 || c.SessionID[14] != '4' || c.LastAssistantID != "msg_answer" {
 		t.Fatalf("cursor: %+v", c)
 	}
-	events, err := store.Events(t.Context(), "s", 0)
+	events, err := faden.CollectEvents(store.Events(t.Context(), "s", 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -479,7 +479,7 @@ func TestFilesSendImageAsBlockAndTextFileAsPathLine(t *testing.T) {
 	if len(c) != 2 || c[0].Text != "Vault rules.\n\nlook\nAttached file: notes.txt\n" || c[1].Source.Media_type != "image/png" || !reflect.DeepEqual(sent, png) {
 		t.Fatalf("content = %+v", c)
 	}
-	events, _ := store.Events(t.Context(), "s", 0)
+	events, _ := faden.CollectEvents(store.Events(t.Context(), "s", 0))
 	if events[0].Text != "look\nAttached file: shot.png\nAttached file: notes.txt\n" {
 		t.Fatalf("user message = %q", events[0].Text)
 	}

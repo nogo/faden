@@ -42,7 +42,7 @@ func TestAttemptIsBoundToItsSessionAndBackend(t *testing.T) {
 	if err := a.Emit(ctx, faden.Event{Kind: faden.AssistantMessage, Text: "hi"}); err != nil {
 		t.Fatal(err)
 	}
-	events, err := a.Events(ctx, 0)
+	events, err := faden.CollectEvents(a.Events(ctx, 0))
 	if err != nil || len(events) != 1 || events[0].Session != "s1" || events[0].RequestID != "r1" || events[0].Time.IsZero() {
 		t.Fatalf("events = %+v, %v", events, err)
 	}

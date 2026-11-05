@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"iter"
 	"regexp"
 	"sync"
 	"time"
@@ -236,20 +237,40 @@ func (s *Store) AppendEvent(ctx context.Context, e faden.Event) (faden.Event, er
 	return e, nil
 }
 
+// eventPage is how many events one query of Events reads. Between pages
+// Events holds no connection, so the caller's loop may use the store even
+// on a database with one connection.
+const eventPage = 64
+
 // Events implements faden.Store.
-func (s *Store) Events(ctx context.Context, id string, after int64) ([]faden.Event, error) {
-	if _, err := s.Session(ctx, id); err != nil {
-		return nil, err
+func (s *Store) Events(ctx context.Context, id string, after int64) iter.Seq2[faden.Event, error] {
+	return func(yield func(faden.Event, error) bool) {
+		if _, err := s.Session(ctx, id); err != nil {
+			yield(faden.Event{}, err)
+			return
+		}
+		after = max(after, 0)
+		for {
+			rows, err := s.rows(ctx, `SELECT data FROM `+s.prefix+`events WHERE session=? AND seq>? ORDER BY seq LIMIT ?`, id, after, eventPage)
+			var page []faden.Event
+			if err == nil {
+				page, err = readRows[faden.Event](rows)
+			}
+			if err != nil {
+				yield(faden.Event{}, fmt.Errorf("sqlite: events: session %s: %w", id, err))
+				return
+			}
+			for _, e := range page {
+				if !yield(e, nil) {
+					return
+				}
+				after = e.Seq
+			}
+			if len(page) < eventPage {
+				return
+			}
+		}
 	}
-	rows, err := s.rows(ctx, `SELECT data FROM `+s.prefix+`events WHERE session=? AND seq>? ORDER BY seq`, id, after)
-	if err != nil {
-		return nil, fmt.Errorf("sqlite: events: session %s: %w", id, err)
-	}
-	out, err := readRows[faden.Event](rows)
-	if err != nil {
-		return nil, fmt.Errorf("sqlite: events: session %s: %w", id, err)
-	}
-	return out, nil
 }
 
 // SetCursor implements faden.Store.

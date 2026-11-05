@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"iter"
 	"maps"
 	"slices"
 	"strings"
@@ -148,23 +149,27 @@ func (s *Store) AppendEvent(_ context.Context, e faden.Event) (faden.Event, erro
 	return copyEvent(e), nil
 }
 
-// Events implements faden.Store.
-func (s *Store) Events(_ context.Context, id string, after int64) ([]faden.Event, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	sess, ok := s.sessions[id]
-	if !ok {
-		return nil, fmt.Errorf("memstore: events: session %s: %w", id, faden.ErrNotFound)
+// Events implements faden.Store. Stored events are never changed, so it
+// takes the lock only to find them.
+func (s *Store) Events(_ context.Context, id string, after int64) iter.Seq2[faden.Event, error] {
+	return func(yield func(faden.Event, error) bool) {
+		s.mu.Lock()
+		sess, ok := s.sessions[id]
+		var events []faden.Event
+		if ok && max(after, 0) < int64(len(sess.events)) {
+			events = sess.events[max(after, 0):len(sess.events):len(sess.events)]
+		}
+		s.mu.Unlock()
+		if !ok {
+			yield(faden.Event{}, fmt.Errorf("memstore: events: session %s: %w", id, faden.ErrNotFound))
+			return
+		}
+		for _, e := range events {
+			if !yield(copyEvent(e), nil) {
+				return
+			}
+		}
 	}
-	after = max(after, 0)
-	if after >= int64(len(sess.events)) {
-		return nil, nil
-	}
-	out := make([]faden.Event, len(sess.events)-int(after))
-	for i, e := range sess.events[after:] {
-		out[i] = copyEvent(e)
-	}
-	return out, nil
 }
 
 // NextEvent implements faden.Store.

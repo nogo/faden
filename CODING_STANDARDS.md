@@ -43,7 +43,7 @@ What a host sees is the product. Keep it small; every exported name is a promise
 - Every new store behaviour gets a case in `storetest`, so all stores keep the same contract.
 
 ### Memory
-- Read a session's events once per operation and pass the slice on. Never read the same session again to answer a second question.
+- Read a session's events in one pass per operation and keep only what the operation needs. `Store.Events` yields one event at a time; collect it only where the whole range is the answer (llama's transcript).
 - Stream files and process output line by line (`bufio.Reader`, `bufio.Scanner`). Never `os.ReadFile` a store file or `io.ReadAll` an unbounded body. Cap every read that has no natural end.
 - A store keeps in memory only what it must answer at once (sessions, turns, cursors). Events stay on disk or in the database, found by offset or key.
 - Copy a buffer only when you keep it. A scanner's line is copied into the event that stores it. A line that is dropped is never copied.

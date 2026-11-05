@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"iter"
 	"time"
 )
 
@@ -82,9 +83,9 @@ func (a *Attempt) Emit(ctx context.Context, e Event) error {
 	return err
 }
 
-// Events returns the session's events with Seq above after, including the
-// ones this attempt emitted.
-func (a *Attempt) Events(ctx context.Context, after int64) ([]Event, error) {
+// Events yields the session's events with Seq above after, including the
+// ones this attempt emitted, as Store.Events does.
+func (a *Attempt) Events(ctx context.Context, after int64) iter.Seq2[Event, error] {
 	return a.store.Events(ctx, a.turn.Session, after)
 }
 
