@@ -1,7 +1,6 @@
 package jsonl_test
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,6 +14,7 @@ func TestConformance(t *testing.T) {
 	storetest.Run(t, func(t *testing.T) storetest.Storage {
 		dir := t.TempDir()
 		return storetest.Storage{
+			Shared: true,
 			InterruptCreate: func(session string, torn bool) {
 				var data []byte
 				if torn {
@@ -47,23 +47,6 @@ func TestConformance(t *testing.T) {
 			},
 		}
 	})
-}
-
-func TestSecondOwnerGetsErrLocked(t *testing.T) {
-	dir := t.TempDir()
-	first, err := jsonl.Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := jsonl.Open(dir); !errors.Is(err, faden.ErrLocked) {
-		t.Fatalf("second Open err = %v, want ErrLocked", err)
-	}
-	first.Close()
-	second, err := jsonl.Open(dir)
-	if err != nil {
-		t.Fatalf("Open after Close: %v", err)
-	}
-	second.Close()
 }
 
 func TestOneFilePerSession(t *testing.T) {

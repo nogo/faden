@@ -17,12 +17,16 @@ import (
 )
 
 // Store implements faden.Store without owning the database or transaction.
-// The host configures SQLite's durability settings and keeps one store owner.
+// The host configures SQLite's durability settings. Several processes on one
+// machine may share the database file in WAL mode, each with its own Store;
+// the host sets a busy timeout. A database on a network share is unsupported.
+// Each session has one owning Store, see Claim.
 type Store struct {
 	db     *sql.DB
 	tx     *sql.Tx
 	prefix string
 	mu     *sync.Mutex // serializes writes through this store and its transaction bindings
+	claims *claims     // shared with the transaction bindings
 }
 
 var identifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -40,12 +44,17 @@ func Open(db *sql.DB, prefix string) (*Store, error) {
 	if !identifier.MatchString(prefix) {
 		return nil, fmt.Errorf("sqlite: open: invalid table prefix %q", prefix)
 	}
-	s := &Store{db: db, prefix: prefix, mu: &sync.Mutex{}}
-	err := s.write(context.Background(), func(s *Store) error {
+	c, err := newClaims()
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: open: %w", err)
+	}
+	s := &Store{db: db, prefix: prefix, mu: &sync.Mutex{}, claims: c}
+	err = s.writeTx(context.Background(), false, func(s *Store) error {
 		for _, schema := range []string{
 			`sessions (id TEXT PRIMARY KEY, data BLOB NOT NULL)`,
 			`turns (request_id TEXT PRIMARY KEY, created TEXT NOT NULL, status TEXT NOT NULL, data BLOB NOT NULL)`,
 			`events (session TEXT NOT NULL, seq INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (session, seq))`,
+			`claims (session TEXT PRIMARY KEY, owner TEXT NOT NULL, token INTEGER NOT NULL, expires INTEGER NOT NULL)`,
 		} {
 			if _, err := s.tx.ExecContext(context.Background(), `CREATE TABLE IF NOT EXISTS `+s.prefix+schema); err != nil {
 				return err
@@ -63,13 +72,45 @@ func Open(db *sql.DB, prefix string) (*Store, error) {
 // database passed to Open. The host owns tx and must commit before starting a
 // runner on the unbound store. Writes are durable only after that commit.
 func (s *Store) WithTx(tx *sql.Tx) *Store {
-	return &Store{db: s.db, tx: tx, prefix: s.prefix, mu: s.mu}
+	return &Store{db: s.db, tx: tx, prefix: s.prefix, mu: s.mu, claims: s.claims}
 }
 
-// Close leaves the host's database and transaction open.
-func (s *Store) Close() error { return nil }
+// Close stops renewing and releases this store's claims. It leaves the host's
+// database and transaction open; closing a WithTx binding does nothing.
+func (s *Store) Close() error {
+	if s.tx != nil {
+		return nil
+	}
+	s.claims.mu.Lock()
+	s.claims.closed = true
+	stop, done := s.claims.stop, s.claims.done
+	held := make([]string, 0, len(s.claims.held))
+	for session := range s.claims.held {
+		held = append(held, session)
+	}
+	s.claims.mu.Unlock()
+	if stop != nil {
+		select {
+		case <-stop:
+		default:
+			close(stop)
+		}
+		<-done
+	}
+	var errs []error
+	for _, session := range held {
+		errs = append(errs, s.Release(context.Background(), session))
+	}
+	return errors.Join(errs...)
+}
 
 func (s *Store) write(ctx context.Context, fn func(*Store) error) error {
+	return s.writeTx(ctx, true, fn)
+}
+
+// writeTx runs fn in a transaction. lock takes the write lock first; Open
+// passes false because the table it would touch may not exist yet.
+func (s *Store) writeTx(ctx context.Context, lock bool, fn func(*Store) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.tx != nil {
@@ -80,6 +121,14 @@ func (s *Store) write(ctx context.Context, fn func(*Store) error) error {
 		return err
 	}
 	defer tx.Rollback()
+	// Take the write lock now. A deferred transaction that reads first and
+	// writes later fails with SQLITE_BUSY at the upgrade when another process
+	// wrote in between, whatever the busy timeout.
+	if lock {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM `+s.prefix+`claims WHERE 0`); err != nil {
+			return err
+		}
+	}
 	if err := fn(s.WithTx(tx)); err != nil {
 		return err
 	}
@@ -173,6 +222,9 @@ func (s *Store) SaveTurn(ctx context.Context, t faden.Turn) error {
 			return err
 		}
 		known.Progress = t.Progress
+		if err := s.fence(ctx, known.Session); err != nil {
+			return err
+		}
 		return s.put(ctx, `UPDATE `+s.prefix+`turns SET status=?2,data=?3 WHERE request_id=?1`, known, t.RequestID, t.Status)
 	})
 	if err != nil {
@@ -224,6 +276,9 @@ func (s *Store) Unfinished(ctx context.Context) ([]faden.Turn, error) {
 func (s *Store) AppendEvent(ctx context.Context, e faden.Event) (faden.Event, error) {
 	err := s.write(ctx, func(s *Store) error {
 		if _, err := s.Session(ctx, e.Session); err != nil {
+			return err
+		}
+		if err := s.fence(ctx, e.Session); err != nil {
 			return err
 		}
 		if err := s.row(ctx, `SELECT COALESCE(MAX(seq),0)+1 FROM `+s.prefix+`events WHERE session=?`, e.Session).Scan(&e.Seq); err != nil {
@@ -278,6 +333,9 @@ func (s *Store) SetCursor(ctx context.Context, id, backend string, cursor json.R
 	err := s.write(ctx, func(s *Store) error {
 		sess, err := s.Session(ctx, id)
 		if err != nil {
+			return err
+		}
+		if err := s.fence(ctx, id); err != nil {
 			return err
 		}
 		if sess.Cursors == nil {

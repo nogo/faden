@@ -85,7 +85,7 @@ The new request is never shortened. Omitted ranges are named, and the agent can 
 | Package | Use it for |
 |---|---|
 | `faden` | `Runner`, `Store`, `Backend`, `Attempt`, `Runtime`, `Local` (run commands on the host) |
-| `jsonl` | A store of append-only files, one per session. One owner process (file lock). |
+| `jsonl` | A store of append-only files, one per session. Several processes may share it; each session has one owner process (file lock). |
 | `sqlite` | A store in your own `*sql.DB`; you bring the driver. `WithTx` joins your transaction. |
 | `memstore` | A store in process memory, lost when the process ends. Use it for a short job (a session title, a one-off question, a test). It keeps every event until dropped, so a host that runs for months uses `jsonl` or `sqlite`. |
 | `claude` | Claude Code through `--print` stream-json. faden creates the session id. |
@@ -181,7 +181,7 @@ What faden does that none of these do in the documentation I read:
 - **Handover between agents within one session,** with a cursor per agent: a returning agent resumes its own native session and gets only what happened since.
 - **The host's own store and transaction.** faden is a library, not a service: sessions live in your SQLite file beside your data, and a submission can commit with your own write.
 
-What faden does not do (yet): streaming to a live view, approvals, ACP agents, sandboxes it starts itself, more than one writing process per store.
+What faden does not do (yet): streaming to a live view, approvals, ACP agents, sandboxes it starts itself, several machines on one store (several processes on one machine are fine).
 
 ## Status
 

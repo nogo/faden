@@ -8,8 +8,9 @@ import (
 	"time"
 )
 
-// ErrLocked means another process owns the store.
-var ErrLocked = errors.New("faden: store is locked by another owner")
+// ErrLocked means another process owns the session. A write that fails with
+// it was fenced: the writer holds no claim on the session.
+var ErrLocked = errors.New("faden: session is owned by another process")
 
 // ErrNotFound means the store holds no such session or turn.
 var ErrNotFound = errors.New("faden: not found")
@@ -148,6 +149,17 @@ type Store interface {
 	NextEvent(ctx context.Context, session string, after int64) (*Event, error)
 	// SetCursor stores the resume cursor of one backend of a session.
 	SetCursor(ctx context.Context, session, backend string, cursor json.RawMessage) error
+	// Claim makes this store the one owner of a session until Release or Close.
+	// It returns ErrLocked while another owner is live and ErrNotFound for an
+	// unknown session; claiming a session it owns changes nothing. A dead
+	// owner's claim can be taken over. Every write that changes a session
+	// (SaveTurn, AppendEvent, SetCursor) fails with ErrLocked unless this store
+	// owns the session or nobody does. SubmitTurn is never fenced: a turn for a
+	// session owned elsewhere is stored, and its owner picks it up.
+	Claim(ctx context.Context, session string) error
+	// Release gives up a claim so another process may take the session.
+	// Releasing a session this store does not own does nothing.
+	Release(ctx context.Context, session string) error
 	// Close releases the store.
 	Close() error
 }

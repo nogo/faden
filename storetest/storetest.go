@@ -25,11 +25,19 @@ type Storage struct {
 	// InterruptCreate leaves an empty or torn first record for session.
 	// Nil if session creation is atomic.
 	InterruptCreate func(session string, torn bool)
+	// Shared is true when two stores opened on the storage may be open at the
+	// same time, as two processes would hold them. It enables the claim tests.
+	Shared bool
+	// Lapse opens a store whose claims run out soon and are not renewed, as
+	// the claims of a process that hangs do. Nil if a claim ends only when its
+	// owner dies, which Close stands in for.
+	Lapse func() faden.Store
 }
 
 // Run runs the suite. newStorage returns a fresh Storage for each test.
 func Run(t *testing.T, newStorage func(t *testing.T) Storage) {
 	ctx := context.Background()
+	claims(t, newStorage)
 	t.Run("CancelledSurvivesReopen", func(t *testing.T) {
 		st := newStorage(t)
 		s := st.Open()

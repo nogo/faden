@@ -18,16 +18,19 @@ const (
 )
 
 // Runner runs turns, one at a time per session, and continues the turns a
-// crash cut off.
+// crash cut off. It runs only the sessions it has claimed in the store, so
+// several runners on one store serve different sessions at once.
 type Runner struct {
 	budget   int
 	prepare  func(context.Context, Turn) (Setup, error)
+	poll     time.Duration
 	store    Store
 	backends map[string]Backend
 	ctx      context.Context
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
 	watchWG  sync.WaitGroup
+	pollWG   sync.WaitGroup        // the loop that adopts sessions
 	watchers map[*watcher]struct{} // guarded by mu
 
 	// mu guards active, turns, changed, draining, fatal and watchers. It is
@@ -198,11 +201,19 @@ type Options struct {
 	// a host can keep the workspace a killed attempt left. Its result reaches
 	// the backend through Attempt.Setup. An error fails the turn.
 	Prepare func(ctx context.Context, t Turn) (Setup, error)
+	// Poll is how often the runner looks in the store for what other
+	// processes did: a session whose owner is gone, and a turn that another
+	// process runs (for Wait). Zero uses one second.
+	Poll time.Duration
 }
 
 // Open starts a runner on store with the backends by name. Before it returns,
-// every running turn has its attempt count raised in the store; each then
-// continues in the background. The host owns the store and closes it after Close.
+// the runner has claimed every session with an unfinished turn that has no
+// live owner, and every running turn in those sessions has its attempt count
+// raised in the store; each then continues in the background. A session owned
+// by another process is left to it. The runner looks again every Options.Poll,
+// so it also takes over a session whose owner died. The host owns the store
+// and closes it after Close.
 func Open(store Store, backends map[string]Backend, options ...Options) (*Runner, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &Runner{
@@ -217,14 +228,68 @@ func Open(store Store, backends map[string]Backend, options ...Options) (*Runner
 	if len(options) > 0 {
 		r.budget = options[0].Budget
 		r.prepare = options[0].Prepare
+		r.poll = options[0].Poll
 	}
-	turns, err := store.Unfinished(ctx)
-	if err != nil {
-		cancel()
+	if r.poll <= 0 {
+		r.poll = time.Second
+	}
+	if err := r.adoptAll(); err != nil {
+		r.Close()
 		return nil, fmt.Errorf("faden: open: %w", err)
 	}
+	r.pollWG.Go(func() {
+		tick := time.NewTicker(r.poll)
+		defer tick.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+				// A failed look is retried at the next tick; a store that stays
+				// broken fails the calls that need it.
+				r.adoptAll()
+			}
+		}
+	})
+	return r, nil
+}
+
+// adoptAll tries to claim every session that has an unfinished turn.
+func (r *Runner) adoptAll() error {
+	turns, err := r.store.Unfinished(r.ctx)
+	if err != nil {
+		return err
+	}
+	seen := map[string]bool{}
 	for _, t := range turns {
-		if t.Status != Running {
+		if seen[t.Session] {
+			continue
+		}
+		seen[t.Session] = true
+		if err := r.kick(t.Session); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// adopt claims session and prepares the running turns it finds there for a
+// continuation: their owner is gone, so the attempt count rises, or the turn
+// is given up after maxAttempts. It reports false when another process owns
+// the session.
+func (r *Runner) adopt(session string) (bool, error) {
+	if err := r.store.Claim(r.ctx, session); err != nil {
+		if errors.Is(err, ErrLocked) {
+			return false, nil
+		}
+		return false, fmt.Errorf("claim session %s: %w", session, err)
+	}
+	turns, err := r.store.Unfinished(r.ctx)
+	if err != nil {
+		return true, err
+	}
+	for _, t := range turns {
+		if t.Session != session || t.Status != Running {
 			continue
 		}
 		if t.Attempts >= maxAttempts {
@@ -232,32 +297,24 @@ func Open(store Store, backends map[string]Backend, options ...Options) (*Runner
 			t.Error = fmt.Sprintf("faden: turn stopped after %d attempts; send a new turn", t.Attempts)
 			// A given-up turn never continues, so nothing else would stop
 			// what its last attempt left running.
-			if b, ok := backends[t.Backend]; ok {
-				if err := b.Stop(ctx, t); err != nil {
+			if b, ok := r.backends[t.Backend]; ok {
+				if err := b.Stop(r.ctx, t); err != nil {
 					t.Error += fmt.Sprintf("; its leftover could not be stopped: %v", err)
 				}
 			}
 		} else {
 			t.Attempts++
 		}
-		if err := store.SaveTurn(ctx, t); err != nil {
-			cancel()
-			return nil, fmt.Errorf("faden: open: turn %s: %w", t.RequestID, err)
+		if err := r.store.SaveTurn(r.ctx, t); err != nil {
+			return true, fmt.Errorf("turn %s: %w", t.RequestID, err)
 		}
 	}
-	turns, err = store.Unfinished(ctx)
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("faden: open: %w", err)
-	}
-	for _, t := range turns {
-		r.kick(t.Session)
-	}
-	return r, nil
+	return true, nil
 }
 
 // Submit stores a pending turn and returns it. A known RequestID returns the
-// existing turn and runs nothing.
+// existing turn and runs nothing. If another process owns the session, that
+// process runs the turn.
 func (r *Runner) Submit(ctx context.Context, s Submission) (Turn, error) {
 	t, err := r.store.SubmitTurn(ctx, Turn{
 		RequestID: s.RequestID,
@@ -271,7 +328,9 @@ func (r *Runner) Submit(ctx context.Context, s Submission) (Turn, error) {
 	if err != nil {
 		return Turn{}, fmt.Errorf("faden: submit %s: %w", s.RequestID, err)
 	}
-	r.kick(t.Session)
+	if err := r.kick(t.Session); err != nil {
+		return t, fmt.Errorf("faden: submit %s: turn stored: %w", s.RequestID, err)
+	}
 	return t, nil
 }
 
@@ -331,13 +390,19 @@ func (r *Runner) Wait(ctx context.Context, requestID string) (Turn, error) {
 		if fatal != nil {
 			return Turn{}, fatal
 		}
+		// Another process may finish the turn, and only the store shows it.
+		poll := time.NewTimer(r.poll)
 		select {
 		case <-changed:
+		case <-poll.C:
 		case <-ctx.Done():
+			poll.Stop()
 			return Turn{}, ctx.Err()
 		case <-r.ctx.Done():
+			poll.Stop()
 			return Turn{}, errors.New("faden: wait: runner closed")
 		}
+		poll.Stop()
 	}
 }
 
@@ -348,6 +413,7 @@ func (r *Runner) Close() error {
 	r.cancel()
 	r.mu.Unlock()
 	r.wg.Wait()
+	r.pollWG.Wait()
 	r.watchWG.Wait()
 	return nil
 }
@@ -372,36 +438,76 @@ func (r *Runner) Drain(ctx context.Context) error {
 	}
 }
 
-func (r *Runner) kick(session string) {
+// kick starts the worker of a session unless it has one, the runner drains,
+// or another process owns the session.
+func (r *Runner) kick(session string) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if r.active[session] || r.draining || r.ctx.Err() != nil {
-		return
+		r.mu.Unlock()
+		return nil
 	}
 	r.active[session] = true
-	r.wg.Go(func() { r.work(session) })
+	r.wg.Add(1) // under mu, so Close cannot wait between the check and the worker
+	r.mu.Unlock()
+	owned, err := r.adopt(session)
+	if err != nil || !owned {
+		if owned {
+			r.store.Release(context.WithoutCancel(r.ctx), session)
+		}
+		r.mu.Lock()
+		r.active[session] = false
+		r.mu.Unlock()
+		r.wg.Done()
+		return err
+	}
+	go func() {
+		defer r.wg.Done()
+		r.work(session)
+	}()
+	return nil
 }
 
-// work runs the turns of one session, oldest first, until none is left.
+// work runs the turns of one session while this runner owns it, then
+// releases it so another process may take its next turn.
 func (r *Runner) work(session string) {
+	idle, err := r.serve(session)
+	// The release comes before active is cleared, so a Submit that finds the
+	// worker still active leaves its turn to the check below.
+	r.store.Release(context.WithoutCancel(r.ctx), session)
+	r.mu.Lock()
+	r.active[session] = false
+	r.mu.Unlock()
+	switch {
+	case errors.Is(err, ErrLocked):
+		// The claim was lost, so another process owns the session now.
+	case err != nil:
+		r.fail(err)
+	case idle && r.ctx.Err() == nil:
+		// A turn stored after the last look, by a process that found the
+		// session owned, would wait for the next poll. Look once more.
+		_, ok, err := r.next(session)
+		if err == nil && ok {
+			err = r.kick(session)
+		}
+		if err != nil {
+			r.fail(err)
+		}
+	}
+}
+
+// serve runs the unfinished turns of a session, oldest first. It reports
+// idle when none is left.
+func (r *Runner) serve(session string) (idle bool, err error) {
 	for {
 		r.mu.Lock()
 		t, ok, err := r.next(session)
-		if !ok || err != nil || r.ctx.Err() != nil || (r.draining && t.Status != Running) {
-			r.active[session] = false
-			r.mu.Unlock()
-			if err != nil {
-				r.fail(err)
-			}
-			return
-		}
+		stop := !ok || err != nil || r.ctx.Err() != nil || (r.draining && t.Status != Running)
 		r.mu.Unlock()
+		if stop {
+			return !ok && err == nil, err
+		}
 		if err := r.run(t); err != nil {
-			r.mu.Lock()
-			r.active[session] = false
-			r.mu.Unlock()
-			r.fail(err)
-			return
+			return false, err
 		}
 	}
 }

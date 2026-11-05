@@ -3,7 +3,7 @@
 // but not durability: a session title, a one-off question, a test.
 //
 // Everything is lost when the process ends, so a restart finds no turn to
-// continue. There is no lock; one process owns its memory.
+// continue. There is no lock and a claim is always granted; one process owns its memory.
 //
 // The store holds every event of every session until it is dropped. It suits
 // a runner that lives for one job. A host that runs for months uses jsonl or
@@ -205,6 +205,20 @@ func (s *Store) SetCursor(_ context.Context, id, backend string, cursor json.Raw
 	sess.meta.Cursors[backend] = cursor
 	return nil
 }
+
+// Claim does nothing but check that the session exists: one process owns the
+// memory, so no other owner can hold it.
+func (s *Store) Claim(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.sessions[id]; !ok {
+		return fmt.Errorf("memstore: claim: session %s: %w", id, faden.ErrNotFound)
+	}
+	return nil
+}
+
+// Release does nothing.
+func (s *Store) Release(context.Context, string) error { return nil }
 
 // Close does nothing: the memory lives as long as the Store value, so the
 // store can be used again after Close.

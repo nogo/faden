@@ -44,7 +44,8 @@
 ### Stores
 
 - **`Store` is an interface in the root package.** faden ships `jsonl` and `sqlite`, and one conformance suite (`storetest`) that every store passes.
-- **`jsonl`:** one append-only file per session in a directory, synced before a write returns. A torn last line is cut at open. A lock file (`flock`) makes one process the owner; a second gets `ErrLocked` at once.
+- ~~**`jsonl`:** one append-only file per session in a directory, synced before a write returns. A torn last line is cut at open. A lock file (`flock`) makes one process the owner; a second gets `ErrLocked` at once.~~ *Changed 2026-11-05: the lock is per session, see "Decided 2026-11-05 — one owner per session" (#20).*
+- **`jsonl`:** one append-only file per session in a directory, synced before a write returns. A torn last line is cut when a process claims the session or appends to it.
 - **`sqlite`:** takes the host's `*sql.DB`, so faden imports no driver. Tables carry a prefix (default `faden_`) so a host database can hold them. A host can bind the store to its own `*sql.Tx`, so a submission commits with the host's own write (invest stores a question with its book).
 - **`modernc.org/sqlite` is a test dependency of `sqlite` only.** The conformance suite needs a real driver; invest already uses this one (pure Go, no cgo). No non-test file imports it.
 
@@ -290,7 +291,7 @@ Rejected: buffering completed events, which either blocks the turn or loses dura
 
 **Package `memstore` is a `faden.Store` in process memory.** `memstore.New()` returns an empty one. The runner reads back what it writes: `Wait` polls the turn, `Unfinished` finds the next turn, and handover, continuation, `read_thread` and llama's message rebuild read the events. So the store keeps sessions, turns, events and cursors, and behaves like `jsonl` and `sqlite` while the process lives. A known `requestId` runs once and queued turns run in order.
 
-**Restart does nothing and there is no lock.** A new store is empty, so `Open` finds no turn to continue. One process owns its memory. `Close` keeps the data, so a reopen within one process passes `storetest`.
+**Restart does nothing and there is no lock.** *(Since 2026-11-05 `Claim` is always granted.)* A new store is empty, so `Open` finds no turn to continue. One process owns its memory. `Close` keeps the data, so a reopen within one process passes `storetest`.
 
 **It holds every event of every session until the store is dropped.** It suits a runner that lives for one job. A host that runs for months uses `jsonl` or `sqlite`.
 
@@ -324,3 +325,19 @@ Rejected: a capped writer inside `bash` only, which left stderr unbounded; stder
 Measured with an idle backend on a jsonl session of 2,000 events of 8 KB (peak RSS, `VmHWM`, two runs each): 31–35 MB before, 16–17.5 MB after. `storetest` checks order across pages, a store call inside the loop (sqlite runs with one connection), and an early stop.
 
 Rejected: one `NextEvent` call per event, which needs no interface change but makes sqlite run two queries per event at every turn start. Not changed: llama still collects the whole session, because it sends its transcript to the model; a handover still holds the events it has not seen.
+
+## Decided 2026-11-05 — one owner per session (#20)
+
+**A session has one owner process at a time, and the owner is the only one that runs its turns.** Measured on main (2026-11-02): two runners on one sqlite store both ran the same interrupted turn (attempts 2 and 3), and the stored turn kept "attempts 2". A lost write. `sqlite` had no owner check, and `jsonl` locked the whole directory, so a second process could serve no session. This replaces "one owner per store".
+
+**`Store` gains `Claim(ctx, session)` and `Release(ctx, session)`.** This breaks every `Store` implementer once. `Claim` fails with `ErrLocked` while another owner is live, and with `ErrNotFound` for an unknown session. A store remembers its own claims, so the write methods keep their signatures. `SaveTurn`, `AppendEvent` and `SetCursor` are fenced: they fail with `ErrLocked` unless the store owns the session or nobody does. `SubmitTurn` is not fenced. A turn submitted to a session owned elsewhere is stored, and the owner picks it up. A request id is unique across processes.
+
+**sqlite: a claims table** `<prefix>claims (session, owner, token, expires)`. The owner is random per `Open`. A takeover raises the token. Each fenced write checks owner and token inside its own transaction, so a takeover cannot slip between check and write. Expiry defaults to 30 s, renewed every 10 s by one goroutine that `Close` stops (`SetClaimTiming` changes both). A write transaction takes SQLite's write lock with its first statement, because a read-then-write transaction fails at the upgrade with `SQLITE_BUSY` whatever the busy timeout. Several processes on one machine share the file in WAL mode; the host sets a busy timeout. A database on a network share stays unsupported.
+
+**jsonl: the claim is an `flock` on the session's file.** The kernel drops it when the process dies, so takeover needs no wait, and the lock needs no token: a dead process cannot write. A process reads sessions it does not own from the file, not from a cache: before each read or write it applies the lines other processes appended. Offsets come from re-reading the file after an append, never from what this process wrote. A short blocking `flock` on `LOCK` orders what several processes must agree on: creating a session, submitting a turn (the request id check) and cutting a torn last line. A claim cuts the torn line of a dead writer. Rejected: a lock on the directory for the whole process, which let one process serve any session.
+
+**The runner claims on demand and releases when idle.** `Open` and `Submit` claim each session that has an unfinished turn and no live owner. A claim of a session with a running turn goes through the existing continuation: attempt raised, `Backend.Stop` for the leftover, continue with stored events. A worker releases its session when no unfinished turn is left, then looks once more, so a turn stored by a process that found the session owned is not stranded. A worker that gets `ErrLocked` has lost its claim and stops that session without failing the turn. `Close` and `Drain` release the claims.
+
+**Processes find each other's work by polling.** `Options.Poll` (default 1 s) sets how often a runner looks for a session whose owner is gone, and how often `Wait` reads the store for a turn another process runs. There is no other notification between processes. A runner serves any session it can claim; the first claimant wins.
+
+Not done: `Cancel` of a turn in a session another process owns fails with `ErrLocked`. Several machines on one store need a store they all reach, such as Postgres.

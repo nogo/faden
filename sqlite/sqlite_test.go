@@ -16,7 +16,7 @@ import (
 
 func database(t *testing.T, path string) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,10 +45,17 @@ func (s closingStore) Close() error { return errors.Join(s.Store.Close(), s.db.C
 func TestStore(t *testing.T) {
 	storetest.Run(t, func(t *testing.T) storetest.Storage {
 		path := filepath.Join(t.TempDir(), "sessions.db")
-		return storetest.Storage{Open: func() faden.Store {
+		openAt := func(expiry, renew time.Duration) faden.Store {
 			db := database(t, path)
-			return closingStore{open(t, db, ""), db}
-		}}
+			s := open(t, db, "")
+			s.SetClaimTiming(expiry, renew)
+			return closingStore{s, db}
+		}
+		return storetest.Storage{
+			Shared: true,
+			Open:   func() faden.Store { return openAt(0, 0) },
+			Lapse:  func() faden.Store { return openAt(200*time.Millisecond, time.Hour) },
+		}
 	})
 }
 
