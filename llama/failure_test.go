@@ -22,6 +22,7 @@ func TestQuotaAfterRetriesCarriesRetryAfter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	llama.RecordWaits(b)
 	before := time.Now()
 	got := run(t, openStore(t, t.TempDir()), b, "r1", "hi")
 	if got.Status != faden.Failed || got.Failure != faden.FailureQuota {
@@ -60,6 +61,7 @@ func TestRefusedConnectionAfterRetriesIsUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	llama.RecordWaits(b)
 	got := run(t, openStore(t, t.TempDir()), b, "r1", "hi")
 	if got.Status != faden.Failed || got.Failure != faden.FailureUnavailable {
 		t.Fatalf("turn = %+v", got)

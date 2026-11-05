@@ -352,6 +352,7 @@ func TestServerErrorFailsTurn(t *testing.T) {
 	defer srv.Close()
 	store := openStore(t, t.TempDir())
 	b, _ := llama.New(llama.Config{URL: srv.URL + "/v1"})
+	llama.RecordWaits(b)
 	got := run(t, store, b, "r1", "hi")
 	if got.Status != faden.Failed || !strings.Contains(got.Error, "503") {
 		t.Fatalf("turn = %+v", got)

@@ -62,6 +62,8 @@ type Config struct {
 // Backend implements faden.Backend.
 type Backend struct {
 	cfg Config
+	// wait pauses before a model call is retried. Tests replace it.
+	wait func(ctx context.Context, d time.Duration) error
 }
 
 // New returns a backend. It fails if a host tool reuses a built-in name.
@@ -89,7 +91,7 @@ func New(cfg Config) (*Backend, error) {
 			return nil, fmt.Errorf("llama: tool name %q is a file tool", t.Name)
 		}
 	}
-	return &Backend{cfg: cfg}, nil
+	return &Backend{cfg: cfg, wait: sleep}, nil
 }
 
 // ContinuesWithoutPrompt reports true: faden owns the transcript.
@@ -417,14 +419,21 @@ func (b *Backend) complete(ctx context.Context, model string, tools map[string]T
 		if err == nil || !retry || attempt == 3 {
 			return m, finalError(err, delay)
 		}
-		delay = max(delay, time.Second<<attempt)
-		timer := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return completion{}, ctx.Err()
-		case <-timer.C:
+		if err := b.wait(ctx, max(delay, time.Second<<attempt)); err != nil {
+			return completion{}, err
 		}
+	}
+}
+
+// sleep waits d, or until ctx ends.
+func sleep(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 

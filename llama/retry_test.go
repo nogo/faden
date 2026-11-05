@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -20,7 +21,6 @@ func TestHostedHeaderAndRetryStatus(t *testing.T) {
 	for _, status := range []int{400, 429, 503} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			var calls atomic.Int32
-			started := time.Now()
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path != "/api/v1/chat/completions" || r.Header.Get("Authorization") != "Bearer invented-token" {
 					t.Error("wrong path or authorization")
@@ -41,6 +41,7 @@ func TestHostedHeaderAndRetryStatus(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			waits := llama.RecordWaits(b)
 			got := run(t, store, b, "r1", "hi")
 			if strings.Contains(got.Error, "invented-token") {
 				t.Fatal("key in error")
@@ -52,8 +53,8 @@ func TestHostedHeaderAndRetryStatus(t *testing.T) {
 			if calls.Load() != wantCalls || got.Status != wantStatus {
 				t.Fatalf("calls=%d turn=%+v", calls.Load(), got)
 			}
-			if status == 429 && time.Since(started) < 2*time.Second {
-				t.Fatal("retried before Retry-After")
+			if w := waits(); status == 429 && (len(w) != 1 || w[0] != 2*time.Second) {
+				t.Fatalf("waits = %v, want the 2s of Retry-After", w)
 			}
 			events, err := store.Events(t.Context(), "s1", 0)
 			if err != nil {
@@ -105,6 +106,7 @@ func TestRetryRefusedConnection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	llama.RecordWaits(b)
 	got := run(t, openStore(t, t.TempDir()), b, "r1", "hi")
 	if got.Status != faden.Done || calls.Load() != 2 {
 		t.Fatalf("calls=%d turn=%+v", calls.Load(), got)
@@ -150,13 +152,12 @@ func TestCancellationStopsRetryAfter(t *testing.T) {
 
 func TestTransportErrorRedactsKey(t *testing.T) {
 	var calls atomic.Int32
-	var times []time.Time
 	client := &http.Client{Transport: failingTransport(func(*http.Request) (*http.Response, error) {
 		calls.Add(1)
-		times = append(times, time.Now())
 		return nil, errors.New("invented-token")
 	})}
 	b, _ := llama.New(llama.Config{URL: "http://example.invalid/v1", Key: "invented-token", Client: client})
+	waits := llama.RecordWaits(b)
 	got := run(t, openStore(t, t.TempDir()), b, "r1", "hi")
 	if got.Status != faden.Failed || strings.Contains(got.Error, "invented-token") {
 		t.Fatalf("turn=%+v", got)
@@ -164,9 +165,7 @@ func TestTransportErrorRedactsKey(t *testing.T) {
 	if calls.Load() != 4 {
 		t.Fatalf("calls=%d, want 4", calls.Load())
 	}
-	for i := 1; i < len(times); i++ {
-		if times[i].Sub(times[i-1]) < time.Second<<(i-1) {
-			t.Fatal("retry wait did not grow")
-		}
+	if w := waits(); !slices.Equal(w, []time.Duration{time.Second, 2 * time.Second, 4 * time.Second}) {
+		t.Fatalf("waits = %v, want 1s, 2s, 4s", w)
 	}
 }
