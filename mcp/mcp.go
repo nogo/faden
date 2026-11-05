@@ -22,7 +22,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/nogo/faden"
 	"github.com/nogo/faden/handover"
 )
 
@@ -35,9 +34,7 @@ const (
 )
 
 // Events is the part of a faden.Store the server reads.
-type Events interface {
-	Events(ctx context.Context, session string, after int64) ([]faden.Event, error)
-}
+type Events = handover.Events
 
 // Server serves read_thread for the sessions it has granted.
 type Server struct {

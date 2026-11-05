@@ -108,8 +108,8 @@ func readThreadTool(a *faden.Attempt, own string) Tool {
 // to one session, the only one ReadThread asks for, so session is not used.
 type attemptEvents struct{ a *faden.Attempt }
 
-func (e attemptEvents) Events(ctx context.Context, _ string, after int64) ([]faden.Event, error) {
-	return e.a.Events(ctx, after)
+func (e attemptEvents) NextEvent(ctx context.Context, _ string, after int64) (*faden.Event, error) {
+	return e.a.NextEvent(ctx, after)
 }
 
 // cutOutput shortens s to at most limit bytes without splitting a rune and

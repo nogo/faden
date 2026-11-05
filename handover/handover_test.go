@@ -1,6 +1,8 @@
 package handover_test
 
 import (
+	"context"
+	"encoding/json"
 	"runtime"
 	"strings"
 	"testing"
@@ -54,5 +56,34 @@ func TestFailedToolResultSaysSo(t *testing.T) {
 	items := handover.Select([]faden.Event{{Seq: 1, Kind: faden.ToolResult, Tool: "bash", Output: "exit 3", Failed: true}}, "", 0)
 	if len(items) != 1 || !strings.HasPrefix(items[0].Text, "tool_result failed bash") {
 		t.Fatalf("%+v", items)
+	}
+}
+
+// countingEvents serves n invented events and counts how many were read.
+type countingEvents struct {
+	n    int64
+	read int
+}
+
+func (c *countingEvents) NextEvent(_ context.Context, _ string, after int64) (*faden.Event, error) {
+	if after >= c.n {
+		return nil, nil
+	}
+	c.read++
+	return &faden.Event{Seq: after + 1, Kind: faden.ToolResult, Output: "out"}, nil
+}
+
+func TestReadThreadReadsOnlyWhatItAnswers(t *testing.T) {
+	events := &countingEvents{n: 10000}
+	got, err := handover.ReadThread(context.Background(), events, "s", json.RawMessage(`{"from":1,"to":1000000}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(got, "\n")
+	if len(lines) != 101 || lines[100] != "[cut: ask again from 101]" {
+		t.Fatalf("got %d lines, last %q", len(lines), lines[len(lines)-1])
+	}
+	if events.read != 101 {
+		t.Fatalf("read %d events of 10000, want 101", events.read)
 	}
 }

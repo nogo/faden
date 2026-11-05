@@ -157,16 +157,16 @@ const (
 // maxThreadItems bounds one ReadThread answer.
 const maxThreadItems = 100
 
-// Events reads a session's events after a sequence number. A faden.Store
-// implements it.
+// Events reads a session's next event after a sequence number, or nil when
+// none is left. A faden.Store implements it.
 type Events interface {
-	Events(ctx context.Context, session string, after int64) ([]faden.Event, error)
+	NextEvent(ctx context.Context, session string, after int64) (*faden.Event, error)
 }
 
 // ReadThread runs ThreadTool for session own. args holds from, to and an
 // optional session, which must be own. The answer has one JSON event per
 // line, without native payloads, and at most 100 events; a last line says
-// where to continue.
+// where to continue. It holds one event at a time, whatever the range.
 func ReadThread(ctx context.Context, events Events, own string, args json.RawMessage) (string, error) {
 	var a struct {
 		Session string `json:"session"`
@@ -179,21 +179,22 @@ func ReadThread(ctx context.Context, events Events, own string, args json.RawMes
 	if a.Session != "" && a.Session != own {
 		return "", errors.New("only this conversation can be read")
 	}
-	a.From = max(a.From, 1)
-	list, err := events.Events(ctx, own, a.From-1)
-	if err != nil {
-		return "", err
-	}
 	var b strings.Builder
 	enc := json.NewEncoder(&b)
-	for n, e := range list {
-		if e.Seq > a.To {
+	after := max(a.From, 1) - 1
+	for n := 0; ; n++ {
+		e, err := events.NextEvent(ctx, own, after)
+		if err != nil {
+			return "", err
+		}
+		if e == nil || e.Seq > a.To {
 			break
 		}
 		if n == maxThreadItems {
 			fmt.Fprintf(&b, "[cut: ask again from %d]\n", e.Seq)
 			break
 		}
+		after = e.Seq
 		e.Native, e.Session, e.RequestID = nil, "", ""
 		if err := enc.Encode(e); err != nil {
 			return "", err

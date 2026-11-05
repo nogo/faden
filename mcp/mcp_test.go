@@ -13,14 +13,13 @@ import (
 
 type fakeEvents map[string][]faden.Event
 
-func (f fakeEvents) Events(_ context.Context, session string, after int64) ([]faden.Event, error) {
-	var out []faden.Event
+func (f fakeEvents) NextEvent(_ context.Context, session string, after int64) (*faden.Event, error) {
 	for _, e := range f[session] {
 		if e.Seq > after {
-			out = append(out, e)
+			return &e, nil
 		}
 	}
-	return out, nil
+	return nil, nil
 }
 
 func start(t *testing.T) (*Server, string) {

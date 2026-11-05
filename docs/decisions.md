@@ -310,3 +310,17 @@ Rejected: a store that drops events and keeps only turns and cursors. It works f
 Measured with `Local.Run` of `head -c N /dev/zero` (peak RSS, `VmHWM`): 200 MB of output held 536 MB before, 10 MB with a 12,001-byte cap.
 
 Rejected: a capped writer inside `bash` only, which left stderr unbounded; stderr in a separate pipe, which misses failures that test runners print to stdout and loses the order of lines.
+
+## Decided 2026-11-05 — command output cap
+
+**`faden.Command.MaxOutput` bounds `Result.Output`, keeping the start and the end.** `Local` and `container` keep the first third and the last two thirds and put `[N bytes left out]` between them; both cuts fall between runes. The command still runs to its end. Zero keeps everything, as before. A host's own runtime that ignores the field still works, without the bound.
+
+**`bash` keeps its last words and its exit code.** A build or test run prints its errors and summary last, often on stdout, so the end matters as much as the start. `bash` asks for `Config.MaxOutput` less 80 bytes, the room for the left-out line, the exit-code line and an `error: ` prefix, so the loop's cut no longer removes them. The loop's cut stays for every other tool. Claude and Codex set 64 KiB on the stderr they buffer; nothing reads it yet.
+
+Measured with `Local.Run` of `head -c N /dev/zero` (peak RSS, `VmHWM`): 200 MB of output held 536 MB before, 10 MB with a 12,001-byte cap.
+
+Rejected: a capped writer inside `bash` only, which left stderr unbounded; stderr in a separate pipe, which misses failures that test runners print to stdout and loses the order of lines.
+
+## Decided 2026-11-05 — read_thread reads one event at a time
+
+**`handover.Events` (and `mcp.Events`, now an alias of it) is `NextEvent`, not `Events`.** `ReadThread` read every event after `from` to answer at most 100, so a read from 1 decoded the whole session. It now holds one event at a time and reads at most 101. A `faden.Store` already has `NextEvent`, so a host that passes its store changes nothing. `Attempt.NextEvent` serves llama's tool. `TestReadThreadReadsOnlyWhatItAnswers` guards the bound.

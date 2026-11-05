@@ -88,6 +88,12 @@ func (a *Attempt) Events(ctx context.Context, after int64) ([]Event, error) {
 	return a.store.Events(ctx, a.turn.Session, after)
 }
 
+// NextEvent returns the session's first event with Seq above after, or nil
+// when there is none. It reads one event, whatever the session's length.
+func (a *Attempt) NextEvent(ctx context.Context, after int64) (*Event, error) {
+	return a.store.NextEvent(ctx, a.turn.Session, after)
+}
+
 // CatchUp returns the events this backend has not seen and the byte budget
 // for selecting from them; zero budget means 16,000. After a handover they
 // are the session's events since the backend last ran; on a continuation
