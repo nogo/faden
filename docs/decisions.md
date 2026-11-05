@@ -194,7 +194,7 @@ Measured with `mise exec -- go test ./llama -run TestReasoningStaysNative -v`: o
 **llama limits tool output, answer tokens and model calls.** `Config.MaxOutput` (12,000 bytes), `Config.MaxTokens` (sent as `max_tokens` when not zero) and `Config.MaxSteps` (40) bound a small model's context and a run's length.
 
 - A tool result longer than `MaxOutput` is cut at a rune boundary and ends with `[output cut at N bytes]`. This covers `bash`, host tools and `read_thread`, and error text too.
-- **The store keeps the cut result.** The model saw the cut text, so a rebuild matches it. The old `bash`-only cut at 32 KiB is gone; one cut now serves every tool. The cut comes after the exit-code line of `bash`, so a very long output loses that line.
+- **The store keeps the cut result.** The model saw the cut text, so a rebuild matches it. The old `bash`-only cut at 32 KiB is gone; one cut now serves every tool. ~~The cut comes after the exit-code line of `bash`, so a very long output loses that line.~~ *Changed 2026-11-05: `bash` keeps the start and the end of its output and its exit-code line; see "Decided 2026-11-05 — command output cap".*
 - A tool still returns its whole output to the loop. The loop drops the excess before it stores or sends it.
 
 Measured with `go test ./llama -run StoredBytes -v` (session file with one user message, two answers, one call and one 100 KB tool result): 103,990 bytes with `MaxOutput` set to 1 GiB (no cut, as before), 13,619 bytes with the default 12,000. This is a storage measurement, not a heap measurement.
@@ -300,3 +300,13 @@ Rejected: a store that drops events and keeps only turns and cursors. It works f
 
 - **`Turn.Progress` holds what changes while a turn runs:** status, attempts, error, failure kind, retry time, limit type and usage. `SubmitTurn` starts a turn at `Progress{Status: Pending}` and `SaveTurn` replaces the whole `Progress`, so a new field needs no store change. Before, each of the three stores listed these fields twice, and the lists disagreed: `SubmitTurn` cleared a caller's failure but kept its usage. `Progress` is embedded, so the stored JSON keys stay the same and old records load. `Turn` literals that set these fields still compile, because Go 1.27 accepts promoted fields in struct literals.
 - **An event append never holds the runner's lock.** The runner stores the event first, then wakes watchers under the lock. A watcher registers before it replays, so an event stored before registration is in the replay, and one stored after it wakes the watcher. The lock still orders the status changes of a turn (start, finish, cancel), so a cancel and a finish cannot both win. Before, every append in every session waited behind one lock held across the store write, and `Cancel` copied the append-and-wake code because calling `Emit` under the lock deadlocked.
+
+## Decided 2026-11-05 — command output cap
+
+**`faden.Command.MaxOutput` bounds `Result.Output`, keeping the start and the end.** `Local` and `container` keep the first third and the last two thirds and put `[N bytes left out]` between them; both cuts fall between runes. The command still runs to its end. Zero keeps everything, as before. A host's own runtime that ignores the field still works, without the bound.
+
+**`bash` keeps its last words and its exit code.** A build or test run prints its errors and summary last, often on stdout, so the end matters as much as the start. `bash` asks for `Config.MaxOutput` less 80 bytes, the room for the left-out line, the exit-code line and an `error: ` prefix, so the loop's cut no longer removes them. The loop's cut stays for every other tool. Claude and Codex set 64 KiB on the stderr they buffer; nothing reads it yet.
+
+Measured with `Local.Run` of `head -c N /dev/zero` (peak RSS, `VmHWM`): 200 MB of output held 536 MB before, 10 MB with a 12,001-byte cap.
+
+Rejected: a capped writer inside `bash` only, which left stderr unbounded; stderr in a separate pipe, which misses failures that test runners print to stdout and loses the order of lines.

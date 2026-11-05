@@ -31,6 +31,7 @@ import (
 	"strings"
 
 	"github.com/nogo/faden"
+	"github.com/nogo/faden/internal/capped"
 )
 
 const pidDir = "/tmp/faden"
@@ -49,12 +50,12 @@ type Runtime struct {
 
 // Run implements faden.Runtime.
 func (r Runtime) Run(ctx context.Context, command faden.Command) (faden.Result, error) {
-	var out bytes.Buffer
-	output := command.Stdout
-	if output == nil {
-		output = &out
+	out := &capped.Buffer{Max: command.MaxOutput}
+	var output io.Writer = out
+	if command.Stdout != nil {
+		output = command.Stdout
 	}
-	res, err := r.start(ctx, command, output, &out)
+	res, err := r.start(ctx, command, output, out)
 	res.Output = out.Bytes()
 	return res, err
 }

@@ -33,6 +33,9 @@ type Threads interface {
 	Config() []byte
 }
 
+// maxStderr bounds the stderr a run keeps in Result.Output.
+const maxStderr = 64 << 10
+
 // Config wires the backend to the host's runtime.
 type Config struct {
 	Runtime Runtime
@@ -171,7 +174,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		res, err := runtime.Run(runCtx, faden.Command{Key: t.RequestID, Dir: setup.Dir, Argv: argv, Env: env, Stdin: stdin, Stdout: writer})
+		res, err := runtime.Run(runCtx, faden.Command{Key: t.RequestID, Dir: setup.Dir, Argv: argv, Env: env, Stdin: stdin, Stdout: writer, MaxOutput: maxStderr})
 		writer.CloseWithError(err)
 		done <- outcome{res, err}
 	}()

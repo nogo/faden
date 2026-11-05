@@ -16,6 +16,10 @@ import (
 
 const bashName = "bash"
 
+// bashReserve is the room bash leaves under the loop's cut for the runtime's
+// left-out line, the exit-code line and an "error: " prefix.
+const bashReserve = 80
+
 // Tool is a function the model may call.
 type Tool struct {
 	Name        string
@@ -46,7 +50,7 @@ func (b *Backend) toolset(a *faden.Attempt, session, key string) map[string]Tool
 		tools[t.Name] = t
 	}
 	if b.cfg.Runtime != nil {
-		tools[bashName] = bashTool(b.cfg.Runtime, key, a.Setup())
+		tools[bashName] = bashTool(b.cfg.Runtime, key, a.Setup(), b.cfg.MaxOutput)
 		if b.cfg.FileTools {
 			for _, t := range fileTools(b.cfg.Runtime, key, a.Setup(), b.cfg.MaxOutput) {
 				tools[t.Name] = t
@@ -58,9 +62,11 @@ func (b *Backend) toolset(a *faden.Attempt, session, key string) map[string]Tool
 }
 
 // bashTool runs a command line through the runtime, in the attempt's Dir and
-// with its Env. It is never Safe. A
-// non-zero exit is an error, so the result is marked failed.
-func bashTool(rt faden.Runtime, key string, setup faden.Setup) Tool {
+// with its Env. It is never Safe. A non-zero exit is an error, so the result
+// is marked failed. The runtime keeps the start and the end of a long
+// output, and leaves room for the exit-code line, so the loop's cut at
+// maxOutput never removes that line or the command's last words.
+func bashTool(rt faden.Runtime, key string, setup faden.Setup, maxOutput int) Tool {
 	return Tool{
 		Name:        bashName,
 		Description: "Run a shell command and return its output and exit code.",
@@ -72,7 +78,7 @@ func bashTool(rt faden.Runtime, key string, setup faden.Setup) Tool {
 			if err := json.Unmarshal(args, &a); err != nil || a.Command == "" {
 				return "", errors.New("arguments need a non-empty command")
 			}
-			res, err := rt.Run(ctx, faden.Command{Key: key, Dir: setup.Dir, Env: setup.Env, Argv: []string{"bash", "-c", a.Command}})
+			res, err := rt.Run(ctx, faden.Command{Key: key, Dir: setup.Dir, Env: setup.Env, Argv: []string{"bash", "-c", a.Command}, MaxOutput: max(maxOutput-bashReserve, 1)})
 			if err != nil {
 				return "", err
 			}

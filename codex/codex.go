@@ -25,6 +25,9 @@ import (
 // Runtime runs keyed commands and stops leftovers before continuation.
 type Runtime = faden.Runtime
 
+// maxStderr bounds the stderr a run keeps in Result.Output.
+const maxStderr = 64 << 10
+
 // Config wires the backend to the host's runtime.
 type Config struct {
 	Runtime Runtime
@@ -164,7 +167,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		res, err := b.cfg.Runtime.Run(runCtx, faden.Command{Key: t.RequestID, Argv: argv, Env: setup.Env, Stdin: stdinR, Stdout: stdoutW})
+		res, err := b.cfg.Runtime.Run(runCtx, faden.Command{Key: t.RequestID, Argv: argv, Env: setup.Env, Stdin: stdinR, Stdout: stdoutW, MaxOutput: maxStderr})
 		stdinR.Close()
 		stdoutW.CloseWithError(err)
 		done <- outcome{res, err}

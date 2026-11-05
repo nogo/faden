@@ -1,7 +1,6 @@
 package faden
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"errors"
@@ -11,10 +10,12 @@ import (
 	"os/exec"
 	"syscall"
 	"time"
+
+	"github.com/nogo/faden/internal/capped"
 )
 
 // Result is what a finished command left behind. Output buffers stderr and,
-// when Command.Stdout is nil, stdout.
+// when Command.Stdout is nil, stdout, up to Command.MaxOutput bytes.
 type Result struct {
 	Output   []byte
 	ExitCode int
@@ -30,6 +31,10 @@ type Command struct {
 	Env    []string
 	Stdin  io.Reader
 	Stdout io.Writer
+	// MaxOutput, if above zero, is the most bytes Result.Output keeps: the
+	// first third and the last two thirds, with a line between them that says
+	// how many bytes were left out. The command still runs to its end.
+	MaxOutput int
 }
 
 // Runtime starts a command where the host wants it to run and waits for it.
@@ -60,12 +65,12 @@ type Local struct {
 
 // Run implements Runtime.
 func (l Local) Run(ctx context.Context, command Command) (Result, error) {
-	var out bytes.Buffer
-	output := command.Stdout
-	if output == nil {
-		output = &out
+	out := &capped.Buffer{Max: command.MaxOutput}
+	var output io.Writer = out
+	if command.Stdout != nil {
+		output = command.Stdout
 	}
-	res, err := l.run(ctx, command, output, &out)
+	res, err := l.run(ctx, command, output, out)
 	res.Output = out.Bytes()
 	return res, err
 }

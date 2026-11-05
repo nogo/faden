@@ -68,3 +68,23 @@ func TestLocalCommandDirOverridesRuntimeDir(t *testing.T) {
 		t.Fatalf("ran in %q, want %q", res.Output, want)
 	}
 }
+
+func TestLocalKeepsStartAndEndOfLongOutputAndRunsToTheEnd(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ended")
+	res, err := faden.Local{PIDDir: dir, Dir: dir}.Run(t.Context(), faden.Command{
+		Key:       "test",
+		Argv:      []string{"sh", "-c", `head -c 1000000 /dev/zero; echo late >&2; touch "$0"; exit 3`, marker},
+		MaxOutput: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(res.Output)
+	if !strings.Contains(out, "bytes left out]") || !strings.HasSuffix(out, "late\n") || res.ExitCode != 3 {
+		t.Fatalf("output %q, exit %d; want its start, a left-out line and its end, exit 3", out, res.ExitCode)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("command did not run to its end: %v", err)
+	}
+}
