@@ -78,16 +78,35 @@ type cursor struct {
 }
 
 // output reads what Claude prints during one run. It holds the cursor the
-// run saves, and what the run learns that is never stored: the error Claude
-// named on a message and the quota limits it reported.
+// run saves, and what the run learns that is never stored: the last result,
+// the error Claude named on a message and the quota limits it reported.
 type output struct {
 	cursor   cursor
 	model    string // the turn's model, for a cost without a model breakdown
 	emit     func(faden.Event) error
 	addUsage func(faden.ModelUsage)
-	result   func() bool
-	apiError string
-	limits   *quotaLimits
+	// closeInput, if set, ends Claude's stdin at the first result.
+	closeInput func()
+	last       *result // nil until a result line arrives
+	apiError   string
+	limits     *quotaLimits
+}
+
+// result is one result line. Claude prints one per answer. A steered message
+// that Claude takes in at a tool call shares the current answer, so results
+// do not count messages. Each result repeats the process's usage totals so
+// far (measured with 2.1.318), so only the last one counts.
+type result struct {
+	ModelUsage map[string]struct {
+		Input  int64   `json:"inputTokens"`
+		Output int64   `json:"outputTokens"`
+		Read   int64   `json:"cacheReadInputTokens"`
+		Write  int64   `json:"cacheCreationInputTokens"`
+		Cost   float64 `json:"costUSD"`
+	} `json:"modelUsage"`
+	TotalCost float64 `json:"total_cost_usd"`
+	IsError   bool    `json:"is_error"`
+	Result    string  `json:"result"`
 }
 
 type quotaLimits struct {
@@ -177,13 +196,13 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 	}
 	defer stdin.Close()
 	defer send.Close()
-	in := &input{writer: send, messages: 1}
+	in := &input{writer: send}
 	in.writeMu.Lock()
 	b.mu.Lock()
 	b.inputs[t.RequestID] = in
 	b.mu.Unlock()
 	defer func() { b.mu.Lock(); delete(b.inputs, t.RequestID); b.mu.Unlock() }()
-	st.result = in.result
+	st.closeInput = in.close
 	sent := make(chan struct{})
 	var sendErr error
 	go func() { _, sendErr = io.Copy(send, first); in.writeMu.Unlock(); close(sent) }()
@@ -203,14 +222,13 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 	}()
 	scan := bufio.NewScanner(reader)
 	scan.Buffer(make([]byte, 4096), 16*1024*1024)
-	ended := false
 	var parseErr error
 	for scan.Scan() {
 		if err := emitFragment(scan.Bytes(), a); err != nil {
 			parseErr = err
 			break
 		}
-		end, err := st.line(scan.Bytes())
+		err := st.line(scan.Bytes())
 		if err == nil && c.LastAssistantID != "" {
 			err = save()
 		}
@@ -218,7 +236,6 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 			parseErr = err
 			break
 		}
-		ended = ended || end
 	}
 	if parseErr == nil {
 		parseErr = scan.Err()
@@ -226,13 +243,23 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 	cancel()
 	reader.Close()
 	out := <-done
-	send.Close()
+	in.close()
 	<-sent
-	if parseErr == nil {
-		parseErr = sendErr
-	}
 	if parseErr != nil {
 		return fmt.Errorf("claude: stream: %w", parseErr)
+	}
+	// Claude has exited, so it has answered every message it took in.
+	if st.last != nil {
+		st.usage()
+		// A cancelled turn already ends with the runner's "cancelled" event.
+		if ctx.Err() == nil {
+			if err := st.end(); err != nil {
+				return fmt.Errorf("claude: stream: %w", err)
+			}
+		}
+	}
+	if sendErr != nil {
+		return fmt.Errorf("claude: stream: %w", sendErr)
 	}
 	if out.err != nil {
 		return fmt.Errorf("claude: run: %w", out.err)
@@ -240,7 +267,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 	if out.result.ExitCode != 0 {
 		return fmt.Errorf("claude: exit code %d", out.result.ExitCode)
 	}
-	if !ended {
+	if st.last == nil {
 		return errors.New("claude: stream ended without result")
 	}
 	return nil
@@ -255,30 +282,21 @@ type block struct {
 	IsError bool            `json:"is_error"`
 }
 
-// line reads one line of Claude's output. It reports true once the result
-// line has ended the turn.
-func (s *output) line(line []byte) (bool, error) {
+// line reads one line of Claude's output. A result line is kept for end and
+// closes Claude's input.
+func (s *output) line(line []byte) error {
 	var msg struct {
-		ModelUsage map[string]struct {
-			Input  int64   `json:"inputTokens"`
-			Output int64   `json:"outputTokens"`
-			Read   int64   `json:"cacheReadInputTokens"`
-			Write  int64   `json:"cacheCreationInputTokens"`
-			Cost   float64 `json:"costUSD"`
-		} `json:"modelUsage"`
-		TotalCost   float64      `json:"total_cost_usd"`
+		result
 		Error       string       `json:"error"`
 		QuotaLimits *quotaLimits `json:"quotaLimits"`
 		Type        string       `json:"type"`
-		IsError     bool         `json:"is_error"`
-		Result      string       `json:"result"`
 		Message     struct {
 			ID      string  `json:"id"`
 			Content []block `json:"content"`
 		} `json:"message"`
 	}
 	if err := json.Unmarshal(line, &msg); err != nil {
-		return false, err
+		return err
 	}
 	if msg.Error != "" {
 		s.apiError = msg.Error
@@ -287,31 +305,15 @@ func (s *output) line(line []byte) (bool, error) {
 		s.limits = msg.QuotaLimits
 	}
 	if msg.Type == "result" {
-		models := make([]string, 0, len(msg.ModelUsage))
-		for model := range msg.ModelUsage {
-			models = append(models, model)
+		last := msg.result
+		s.last = &last
+		if s.closeInput != nil {
+			s.closeInput()
 		}
-		sort.Strings(models)
-		for _, model := range models {
-			u := msg.ModelUsage[model]
-			s.addUsage(faden.ModelUsage{Model: model, InputTokens: u.Input + u.Read + u.Write, OutputTokens: u.Output, CacheReadTokens: u.Read, CacheWriteTokens: u.Write, CostUSD: u.Cost})
-		}
-		if len(models) == 0 && msg.TotalCost != 0 {
-			s.addUsage(faden.ModelUsage{Model: s.model, CostUSD: msg.TotalCost})
-		}
-		if s.result != nil && !s.result() && !msg.IsError {
-			return false, nil
-		}
-		if err := s.emit(faden.Event{Kind: faden.TurnEnded, Text: msg.Result}); err != nil {
-			return false, err
-		}
-		if msg.IsError {
-			return true, s.failure(msg.Result)
-		}
-		return true, nil
+		return nil
 	}
 	if msg.Type != "assistant" && msg.Type != "user" {
-		return false, nil
+		return nil
 	}
 	if msg.Type == "assistant" {
 		s.cursor.LastAssistantID = msg.Message.ID
@@ -343,7 +345,7 @@ func (s *output) line(line []byte) (bool, error) {
 			if json.Unmarshal(v.Content, &e.Output) != nil {
 				var blocks []block
 				if err := json.Unmarshal(v.Content, &blocks); err != nil {
-					return false, err
+					return err
 				}
 				var text []string
 				for _, b := range blocks {
@@ -357,10 +359,38 @@ func (s *output) line(line []byte) (bool, error) {
 			continue
 		}
 		if err := s.emit(e); err != nil {
-			return false, err
+			return err
 		}
 	}
-	return false, nil
+	return nil
+}
+
+// usage adds the last result's usage, which covers the whole process.
+func (s *output) usage() {
+	models := make([]string, 0, len(s.last.ModelUsage))
+	for model := range s.last.ModelUsage {
+		models = append(models, model)
+	}
+	sort.Strings(models)
+	for _, model := range models {
+		u := s.last.ModelUsage[model]
+		s.addUsage(faden.ModelUsage{Model: model, InputTokens: u.Input + u.Read + u.Write, OutputTokens: u.Output, CacheReadTokens: u.Read, CacheWriteTokens: u.Write, CostUSD: u.Cost})
+	}
+	if len(models) == 0 && s.last.TotalCost != 0 {
+		s.addUsage(faden.ModelUsage{Model: s.model, CostUSD: s.last.TotalCost})
+	}
+}
+
+// end stores the last result as the turn's end, and names the failure if
+// Claude reported one.
+func (s *output) end() error {
+	if err := s.emit(faden.Event{Kind: faden.TurnEnded, Text: s.last.Result}); err != nil {
+		return err
+	}
+	if s.last.IsError {
+		return s.failure(s.last.Result)
+	}
+	return nil
 }
 
 // failure names why an unsuccessful turn failed. Claude reports a quota stop

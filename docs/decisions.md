@@ -348,6 +348,17 @@ Not done: `Cancel` of a turn in a session another process owns fails with `ErrLo
 
 **The runner stores a `UserMessage` with the same request ID before delivery.** A delivery error leaves that event stored. Continuation, handover and `read_thread` see it as input. Steering a session owned elsewhere returns `ErrLocked`; there is no transport between owners.
 
-**Claude owns an open stdin pipe until the last outstanding message receives a result.** Each sent message adds one expected result. Intermediate results contribute usage, but only the last emits `TurnEnded`. This chooses the queued-message interpretation; the fake CLI exercises it by answering each input separately.
+~~**Claude owns an open stdin pipe until the last outstanding message receives a result.** Each sent message adds one expected result. Intermediate results contribute usage, but only the last emits `TurnEnded`. This chooses the queued-message interpretation; the fake CLI exercises it by answering each input separately.~~ *Changed 2026-11-06: the real CLI answers a message taken in at a tool call with the current result, so a turn with tool calls never ended. Each result also repeats the usage totals, so a steered turn counted the first answer twice.*
 
-**Real CLI behavior remains unverified.** In this container, `command -v claude` found no executable, and `claude --version` failed with `command not found`. No CLI version or live observation is available. Whether input joins the next step or produces a separate result must still be measured with the real CLI; one result per message is an assumption, not an observation.
+~~**Real CLI behavior remains unverified.** In this container, `command -v claude` found no executable, and `claude --version` failed with `command not found`. No CLI version or live observation is available. Whether input joins the next step or produces a separate result must still be measured with the real CLI; one result per message is an assumption, not an observation.~~ *Measured 2026-11-06, see below.*
+
+**What Claude Code 2.1.318 does with a message during a turn** (`claude --print --input-format stream-json --output-format stream-json --verbose`, model haiku):
+
+1. **No tool calls:** the message waits. The first answer completes, then a second `result` answers the message.
+2. **With tool calls:** the message joins the turn at the next tool call. One `result` answers both messages. The stream does not echo the message.
+3. **stdin closed after a waiting message, before the first result:** Claude still answers it with a second result, then exits.
+4. **Usage:** each `result` repeats the process's totals so far. After a first answer of 411 output tokens, the second result reported 415.
+
+**Claude's stdin stays open until the first `result`, and the turn ends when Claude exits.** Results do not count messages, because one result can answer two. After the first result, `Steer` returns `ErrNotRunning`. Claude still answers every message it has read, then exits. Only then does the backend store one `TurnEnded` with the last result, and add that result's usage. `TestLiveSteer` (`FADEN_LIVE=1`) checks case 2 against the real CLI.
+
+Rejected: keep stdin open and end at the result that answers the last message. Nothing in the stream shows whether a message joined the current answer, so the backend cannot know which result is the last.
