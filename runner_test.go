@@ -252,16 +252,17 @@ const crashDirEnv = "FADEN_CRASH_CHILD_DIR"
 func TestCrashChildProcess(t *testing.T) {
 	dir := os.Getenv(crashDirEnv)
 	if dir == "" {
-		t.Skip("helper for TestKilledTurnFinishesAfterRestart")
+		t.Skip("helper for TestKilledSteeredTurnFinishesAfterRestart")
 	}
 	store := openStore(t, dir)
-	b := &fake{run: func(ctx context.Context, _ faden.Turn, a *faden.Attempt) error {
+	started := make(chan struct{})
+	b := &steeringFake{fake: &fake{run: func(ctx context.Context, _ faden.Turn, a *faden.Attempt) error {
 		a.Emit(ctx, faden.Event{Kind: faden.AssistantMessage, Text: "one"})
 		a.Emit(ctx, faden.Event{Kind: faden.AssistantMessage, Text: "two"})
-		os.Stdout.WriteString("ready\n")
+		close(started)
 		<-ctx.Done()
 		return ctx.Err()
-	}}
+	}}, steer: func(context.Context, faden.Turn, string) error { return nil }}
 	r, err := faden.Open(store, map[string]faden.Backend{"fake": b})
 	if err != nil {
 		t.Fatal(err)
@@ -269,10 +270,15 @@ func TestCrashChildProcess(t *testing.T) {
 	if _, err := r.Submit(t.Context(), sub("s1", "r1", "work")); err != nil {
 		t.Fatal(err)
 	}
+	<-started
+	if _, err := r.Steer(t.Context(), "r1", "use blue"); err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout.WriteString("ready\n")
 	select {} // killed by the parent
 }
 
-func TestKilledTurnFinishesAfterRestart(t *testing.T) {
+func TestKilledSteeredTurnFinishesAfterRestart(t *testing.T) {
 	dir := t.TempDir()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestCrashChildProcess$")
 	cmd.Env = append(os.Environ(), crashDirEnv+"="+dir)
@@ -311,7 +317,7 @@ func TestKilledTurnFinishesAfterRestart(t *testing.T) {
 	}
 	events, _ := faden.CollectEvents(store.Events(t.Context(), "s1", 0))
 	// The input is stored once; the continuation prompt is not stored as a user message.
-	if len(events) != 3 || events[0].Kind != faden.UserMessage || events[0].Text != "work" || events[1].Text != "one" || events[2].Text != "two" {
+	if len(events) != 4 || events[0].Kind != faden.UserMessage || events[0].Text != "work" || events[1].Text != "one" || events[2].Text != "two" || events[3].Kind != faden.UserMessage || events[3].Text != "use blue" {
 		t.Fatalf("events = %+v", events)
 	}
 	unfinished, _ := store.Unfinished(t.Context())

@@ -341,3 +341,13 @@ Rejected: one `NextEvent` call per event, which needs no interface change but ma
 **Processes find each other's work by polling.** `Options.Poll` (default 1 s) sets how often a runner looks for a session whose owner is gone, and how often `Wait` reads the store for a turn another process runs. There is no other notification between processes. A runner serves any session it can claim; the first claimant wins.
 
 Not done: `Cancel` of a turn in a session another process owns fails with `ErrLocked`. Several machines on one store need a store they all reach, such as Postgres.
+
+## Decided 2026-11-06 — steer a running turn (#41)
+
+**`Runner.Steer(ctx, requestID, text) (Turn, error)` adds input to a running turn.** An optional backend method, `Steer(context.Context, Turn, string) error`, delivers it. Pending and final turns return `ErrNotRunning`; final turns remain unchanged. A backend without that method returns `ErrCannotSteer`, without storing an event. Codex and llama do not implement the method.
+
+**The runner stores a `UserMessage` with the same request ID before delivery.** A delivery error leaves that event stored. Continuation, handover and `read_thread` see it as input. Steering a session owned elsewhere returns `ErrLocked`; there is no transport between owners.
+
+**Claude owns an open stdin pipe until the last outstanding message receives a result.** Each sent message adds one expected result. Intermediate results contribute usage, but only the last emits `TurnEnded`. This chooses the queued-message interpretation; the fake CLI exercises it by answering each input separately.
+
+**Real CLI behavior remains unverified.** In this container, `command -v claude` found no executable, and `claude --version` failed with `command not found`. No CLI version or live observation is available. Whether input joins the next step or produces a separate result must still be measured with the real CLI; one result per message is an assumption, not an observation.

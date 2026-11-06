@@ -15,6 +15,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nogo/faden"
@@ -48,7 +49,11 @@ type Config struct {
 }
 
 // Backend implements faden.Backend for Claude Code.
-type Backend struct{ cfg Config }
+type Backend struct {
+	cfg    Config
+	mu     sync.Mutex // guards inputs
+	inputs map[string]*input
+}
 
 // New validates the host's collaborators.
 func New(cfg Config) (*Backend, error) {
@@ -56,7 +61,7 @@ func New(cfg Config) (*Backend, error) {
 		return nil, errors.New("claude: runtime is required")
 	}
 	cfg.Args = append([]string(nil), cfg.Args...)
-	return &Backend{cfg: cfg}, nil
+	return &Backend{cfg: cfg, inputs: make(map[string]*input)}, nil
 }
 
 // ContinuesWithoutPrompt reports false: Claude needs a continuation message.
@@ -80,6 +85,7 @@ type output struct {
 	model    string // the turn's model, for a cost without a model breakdown
 	emit     func(faden.Event) error
 	addUsage func(faden.ModelUsage)
+	result   func() bool
 	apiError string
 	limits   *quotaLimits
 }
@@ -163,8 +169,25 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 	}
 	defer files.Close()
 	prompt := attach.WithLines(handover.Prompt(t, a), files.Others)
-	stdin, stop := userMessage(prompt, files.Images)
+	first, stop := userMessage(prompt, files.Images)
 	defer stop()
+	stdin, send, err := os.Pipe()
+	if err != nil {
+		return err
+	}
+	defer stdin.Close()
+	defer send.Close()
+	in := &input{writer: send, messages: 1}
+	in.writeMu.Lock()
+	b.mu.Lock()
+	b.inputs[t.RequestID] = in
+	b.mu.Unlock()
+	defer func() { b.mu.Lock(); delete(b.inputs, t.RequestID); b.mu.Unlock() }()
+	st.result = in.result
+	sent := make(chan struct{})
+	var sendErr error
+	go func() { _, sendErr = io.Copy(send, first); in.writeMu.Unlock(); close(sent) }()
+	defer func() { send.Close(); <-sent }()
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	reader, writer := io.Pipe()
@@ -203,6 +226,11 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 	cancel()
 	reader.Close()
 	out := <-done
+	send.Close()
+	<-sent
+	if parseErr == nil {
+		parseErr = sendErr
+	}
 	if parseErr != nil {
 		return fmt.Errorf("claude: stream: %w", parseErr)
 	}
@@ -270,6 +298,9 @@ func (s *output) line(line []byte) (bool, error) {
 		}
 		if len(models) == 0 && msg.TotalCost != 0 {
 			s.addUsage(faden.ModelUsage{Model: s.model, CostUSD: msg.TotalCost})
+		}
+		if s.result != nil && !s.result() && !msg.IsError {
+			return false, nil
 		}
 		if err := s.emit(faden.Event{Kind: faden.TurnEnded, Text: msg.Result}); err != nil {
 			return false, err

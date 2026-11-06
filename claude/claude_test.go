@@ -65,7 +65,7 @@ const stream = `{"type":"system","subtype":"init","session_id":"ignored"}
 
 func TestTurns(t *testing.T) {
 	dir := t.TempDir()
-	program := "#!/bin/sh\nprintf '%s\\n' \"$@\" > args\ncat > input\ncat fixture\n"
+	program := "#!/bin/sh\nprintf '%s\\n' \"$@\" > args\nIFS= read -r line; printf '%s\\n' \"$line\" > input\ncat fixture\n"
 	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(program), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +223,7 @@ func TestLiveResumeAfterKill(t *testing.T) {
 
 func TestRunnerContinuesStoredTurn(t *testing.T) {
 	dir := t.TempDir()
-	program := "#!/bin/sh\nprintf '%s\\n' \"$@\" > args\ncat > input\ncat fixture\n"
+	program := "#!/bin/sh\nprintf '%s\\n' \"$@\" > args\nIFS= read -r line; printf '%s\\n' \"$line\" > input\ncat fixture\n"
 	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(program), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +302,7 @@ type hostRuntime struct{ faden.Local }
 
 func TestThreadsTokenOnlyInEnvironment(t *testing.T) {
 	dir := t.TempDir()
-	program := "#!/bin/sh\nprintf '%s\\n' \"$@\" > args\ncat > input\nwhile [ $# -gt 0 ]; do [ \"$1\" = --mcp-config ] && cp \"$2\" config; shift; done\nprintf '%s' \"$FADEN_MCP_TOKEN\" > token\ncat fixture\n"
+	program := "#!/bin/sh\nprintf '%s\\n' \"$@\" > args\nIFS= read -r line; printf '%s\\n' \"$line\" > input\nwhile [ $# -gt 0 ]; do [ \"$1\" = --mcp-config ] && cp \"$2\" config; shift; done\nprintf '%s' \"$FADEN_MCP_TOKEN\" > token\ncat fixture\n"
 	os.WriteFile(filepath.Join(dir, "claude"), []byte(program), 0700)
 	os.WriteFile(filepath.Join(dir, "fixture"), []byte(stream), 0600)
 	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
@@ -329,7 +329,7 @@ func TestThreadsTokenOnlyInEnvironment(t *testing.T) {
 func TestKilledTurnCarriesStoredToolEvents(t *testing.T) {
 	t.Setenv("FADEN_TEST_CONTEXT", "Vault rules for this turn.")
 	dir := t.TempDir()
-	program := "#!/bin/sh\ncat > input\ncat fixture\nexec sleep 120\n"
+	program := "#!/bin/sh\nIFS= read -r line; printf '%s\\n' \"$line\" > input\ncat fixture\nexec sleep 120\n"
 	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(program), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -342,7 +342,7 @@ func TestKilledTurnCarriesStoredToolEvents(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "fixture"), []byte(stream), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte("#!/bin/sh\ncat > input\ncat fixture\n"), 0700); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte("#!/bin/sh\nIFS= read -r line; printf '%s\\n' \"$line\" > input\ncat fixture\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	continuationtest.Continue(t, dir, "claude", runnerBackend(t, dir))
@@ -377,7 +377,7 @@ func TestFailedToolResultIsMarked(t *testing.T) {
 }
 
 // A fake claude that records its directory, arguments and one variable.
-const recordingClaude = "#!/bin/sh\npwd > pwd\nprintf '%s\\n' \"$@\" > args\nprintf '%s' \"$HOST_VAR\" > var\ncat > input\ncat fixture\n"
+const recordingClaude = "#!/bin/sh\npwd > pwd\nprintf '%s\\n' \"$@\" > args\nprintf '%s' \"$HOST_VAR\" > var\nIFS= read -r line; printf '%s\\n' \"$line\" > input\ncat fixture\n"
 
 func TestPrepareSetupReachesCommandAndSystemOnlyOnFirstAttempt(t *testing.T) {
 	dir, work := t.TempDir(), t.TempDir()
@@ -440,7 +440,7 @@ func TestFilesSendImageAsBlockAndTextFileAsPathLine(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	program := "#!/bin/sh\ncat > " + dir + "/input\ncat " + dir + "/fixture\n"
+	program := "#!/bin/sh\nIFS= read -r line; printf '%s\\n' \"$line\" > " + dir + "/input\ncat " + dir + "/fixture\n"
 	os.WriteFile(filepath.Join(dir, "claude"), []byte(program), 0700)
 	os.WriteFile(filepath.Join(dir, "fixture"), []byte(stream), 0600)
 	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))

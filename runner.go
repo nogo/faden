@@ -33,6 +33,8 @@ type Runner struct {
 	pollWG   sync.WaitGroup        // the loop that adopts sessions
 	watchers map[*watcher]struct{} // guarded by mu
 
+	steerMu sync.Mutex // orders steering appends, cancellation and completion
+
 	// mu guards active, turns, changed, draining, fatal and watchers. It is
 	// held only for work in memory, with one exception: the status change of
 	// a turn (run starting it, finish, Cancel) reads and writes the store
@@ -337,6 +339,8 @@ func (r *Runner) Submit(ctx context.Context, s Submission) (Turn, error) {
 // Cancel permanently ends one turn. Final turns are returned unchanged.
 // The cancellation is stored before the backend is stopped.
 func (r *Runner) Cancel(ctx context.Context, requestID string) (Turn, error) {
+	r.steerMu.Lock()
+	defer r.steerMu.Unlock()
 	r.mu.Lock()
 	t, err := r.store.Turn(ctx, requestID)
 	if err != nil {
@@ -556,6 +560,8 @@ func (r *Runner) broadcast() {
 }
 
 func (r *Runner) finish(t Turn, status Status, msg string) error {
+	r.steerMu.Lock()
+	defer r.steerMu.Unlock()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	stored, err := r.store.Turn(context.WithoutCancel(r.ctx), t.RequestID)
