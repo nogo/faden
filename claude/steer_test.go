@@ -3,6 +3,7 @@ package claude
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,11 @@ import (
 	"github.com/nogo/faden"
 	"github.com/nogo/faden/jsonl"
 )
+
+// steer is a steered submission to session "s" on Claude.
+func steer(id, input, model string) faden.Submission {
+	return faden.Submission{Session: "s", RequestID: id, Input: input, Backend: "claude", Model: model, Steer: true}
+}
 
 // steerRunner runs program as the claude command in dir and submits turn "r".
 func steerRunner(t *testing.T, dir, program string) (*faden.Runner, *jsonl.Store) {
@@ -69,8 +75,8 @@ cat > /dev/null
 		}
 		switch item.Event.Text {
 		case "ready":
-			if _, err := r.Steer(ctx, "r", "use blue"); err != nil {
-				t.Fatal(err)
+			if got, err := r.Submit(ctx, steer("blue", "use blue", "")); err != nil || got.Status != faden.Joined {
+				t.Fatalf("steer = %+v, %v", got, err)
 			}
 		case "waiting":
 			turn, err := store.Turn(ctx, "r")
@@ -81,8 +87,8 @@ cat > /dev/null
 			if err != nil || !strings.Contains(string(data), "use blue") {
 				t.Fatalf("stdin = %s, %v", data, err)
 			}
-			if _, err := r.Steer(ctx, "r", "too late"); !errors.Is(err, faden.ErrNotRunning) {
-				t.Fatalf("Steer after the first result = %v, want ErrNotRunning", err)
+			if got, err := r.Submit(ctx, steer("late", "too late", "")); err != nil || got.Status != faden.Pending {
+				t.Fatalf("steer after the first result = %+v, %v, want a queued turn", got, err)
 			}
 			gate, err := os.OpenFile(filepath.Join(dir, "gate"), os.O_WRONLY, 0600)
 			if err != nil {
@@ -134,8 +140,8 @@ cat > /dev/null
 		}
 		switch item.Event.Kind {
 		case faden.ToolCall:
-			if _, err := r.Steer(ctx, "r", "use blue"); err != nil {
-				t.Fatal(err)
+			if got, err := r.Submit(ctx, steer("blue", "use blue", "")); err != nil || got.Status != faden.Joined {
+				t.Fatalf("steer = %+v, %v", got, err)
 			}
 		case faden.TurnEnded:
 			turn, err := r.Wait(ctx, "r")
@@ -200,8 +206,8 @@ func TestLiveSteer(t *testing.T) {
 		case faden.ToolCall:
 			calls++
 			if calls == 1 {
-				if _, err := r.Steer(ctx, "r", "Stop running commands. Reply only with the word BLUE."); err != nil {
-					t.Fatal(err)
+				if got, err := r.Submit(ctx, steer("blue", "Stop running commands. Reply only with the word BLUE.", "haiku")); err != nil || got.Status != faden.Joined {
+					t.Fatalf("steer = %+v, %v", got, err)
 				}
 			}
 		case faden.TurnEnded:
@@ -217,4 +223,31 @@ func TestLiveSteer(t *testing.T) {
 		t.Fatalf("Wait = %+v, %v", turn, err)
 	}
 	t.Logf("tool calls %d, answer %q, usage %+v", calls, answer, turn.Usage)
+}
+
+// The first result can arrive while a steer stores its message. The message
+// is in the thread then, so it must still reach Claude before stdin closes.
+func TestResultDuringSteerStillDeliversTheMessage(t *testing.T) {
+	read, write, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer read.Close()
+	in := &input{writer: write}
+	b := &Backend{inputs: map[string]*input{"r": in}}
+	err = b.Steer(t.Context(), faden.Turn{RequestID: "r"}, "use blue", func() error {
+		in.close() // the first result
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(read) // ends only when stdin is closed
+	if err != nil || !strings.Contains(string(data), "use blue") {
+		t.Fatalf("stdin = %q, %v", data, err)
+	}
+	stored := false
+	if err := b.Steer(t.Context(), faden.Turn{RequestID: "r"}, "late", func() error { stored = true; return nil }); !errors.Is(err, faden.ErrNotRunning) || stored {
+		t.Fatalf("steer after close = %v, stored %v", err, stored)
+	}
 }

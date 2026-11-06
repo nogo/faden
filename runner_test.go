@@ -262,7 +262,7 @@ func TestCrashChildProcess(t *testing.T) {
 		close(started)
 		<-ctx.Done()
 		return ctx.Err()
-	}}, steer: func(context.Context, faden.Turn, string) error { return nil }}
+	}}, steer: deliver}
 	r, err := faden.Open(store, map[string]faden.Backend{"fake": b})
 	if err != nil {
 		t.Fatal(err)
@@ -271,7 +271,7 @@ func TestCrashChildProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-started
-	if _, err := r.Steer(t.Context(), "r1", "use blue"); err != nil {
+	if got, err := r.Submit(t.Context(), steered("s1", "blue", "use blue")); err != nil || got.Status != faden.Joined {
 		t.Fatal(err)
 	}
 	os.Stdout.WriteString("ready\n")
@@ -327,8 +327,14 @@ func TestKilledSteeredTurnFinishesAfterRestart(t *testing.T) {
 	if again, _ := r.Submit(t.Context(), sub("s1", "r1", "work")); again.Status != faden.Done {
 		t.Fatalf("resubmit = %+v", again)
 	}
-	if n := strings.Count(readSession(t, dir), `"status":"pending"`); n != 1 {
-		t.Fatalf("turn was stored %d times as pending, want 1", n)
+	var pending int
+	for _, line := range strings.Split(readSession(t, dir), "\n") {
+		if strings.Contains(line, `"requestId":"r1"`) && strings.Contains(line, `"status":"pending"`) {
+			pending++
+		}
+	}
+	if pending != 1 {
+		t.Fatalf("turn was stored %d times as pending, want 1", pending)
 	}
 }
 

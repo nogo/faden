@@ -18,17 +18,22 @@ var ErrNotFound = errors.New("faden: not found")
 // Status is where a turn stands.
 type Status string
 
-// The statuses of a turn. Done, failed and cancelled are final.
+// The statuses of a turn. Done, failed, cancelled and joined are final. A
+// joined turn never runs: its input went into the running turn named by
+// Progress.Joined.
 const (
 	Pending   Status = "pending"
 	Running   Status = "running"
 	Done      Status = "done"
 	Failed    Status = "failed"
 	Cancelled Status = "cancelled"
+	Joined    Status = "joined"
 )
 
 // Final reports whether the turn will not run again.
-func (s Status) Final() bool { return s == Done || s == Failed || s == Cancelled }
+func (s Status) Final() bool {
+	return s == Done || s == Failed || s == Cancelled || s == Joined
+}
 
 // Kind says what one event is.
 type Kind string
@@ -86,6 +91,9 @@ type Progress struct {
 	LimitType string      `json:"limitType,omitempty"`
 	// Usage is the total per model over all attempts.
 	Usage []ModelUsage `json:"usage,omitempty"`
+	// Joined is the request id of the running turn a joined turn's input went
+	// into. Wait for that turn to get the answer.
+	Joined string `json:"joined,omitempty"`
 }
 
 // ModelUsage is the tokens and cost reported by a backend for one model.

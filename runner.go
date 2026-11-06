@@ -178,6 +178,9 @@ type Submission struct {
 	Files   []string
 	Backend string
 	Model   string
+	// Steer asks to put Input into the session's running turn, if it can take
+	// it, instead of queuing a turn. See Runner.Submit.
+	Steer bool
 }
 
 // Setup is the host's preparation of one attempt. A backend applies what it
@@ -317,7 +320,18 @@ func (r *Runner) adopt(session string) (bool, error) {
 // Submit stores a pending turn and returns it. A known RequestID returns the
 // existing turn and runs nothing. If another process owns the session, that
 // process runs the turn.
+//
+// With s.Steer, the input joins the session's running turn when this runner
+// runs it on a backend that takes input during a turn, with the same backend
+// and model, and s has no Context or Files. Submit then returns a turn with
+// status Joined; its Progress.Joined names the turn that answers it. In every
+// other case s is queued as usual.
 func (r *Runner) Submit(ctx context.Context, s Submission) (Turn, error) {
+	if s.Steer {
+		if t, done, err := r.steer(ctx, s); done {
+			return t, err
+		}
+	}
 	t, err := r.store.SubmitTurn(ctx, Turn{
 		RequestID: s.RequestID,
 		Session:   s.Session,

@@ -61,6 +61,29 @@ func Run(t *testing.T, newStorage func(t *testing.T) Storage) {
 			t.Fatalf("unfinished = %+v, %v", left, err)
 		}
 	})
+	t.Run("JoinedSurvivesReopen", func(t *testing.T) {
+		st := newStorage(t)
+		s := st.Open()
+		turn, err := s.SubmitTurn(ctx, faden.Turn{RequestID: "steered", Session: "s", Backend: "a"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		turn.Status, turn.Joined = faden.Joined, "running"
+		if err := s.SaveTurn(ctx, turn); err != nil {
+			t.Fatal(err)
+		}
+		s.Close()
+		s = st.Open()
+		defer s.Close()
+		got, err := s.Turn(ctx, "steered")
+		if err != nil || got.Status != faden.Joined || got.Joined != "running" || !got.Status.Final() {
+			t.Fatalf("turn = %+v, %v", got, err)
+		}
+		left, err := s.Unfinished(ctx)
+		if err != nil || len(left) != 0 {
+			t.Fatalf("unfinished = %+v, %v", left, err)
+		}
+	})
 	turn := func(id, session string) faden.Turn {
 		return faden.Turn{RequestID: id, Session: session, Input: "in " + id, Backend: "a", Model: "m"}
 	}

@@ -7,53 +7,107 @@ import (
 	"time"
 )
 
-// ErrNotRunning means the requested turn cannot receive input now.
-var ErrNotRunning = errors.New("faden: turn is not running")
+// ErrNotRunning is what a steering backend returns when the running turn
+// takes no more input. The runner then queues the submission as a turn.
+var ErrNotRunning = errors.New("faden: turn takes no more input")
 
-// ErrCannotSteer means the backend does not support input during a turn.
-var ErrCannotSteer = errors.New("faden: backend cannot steer")
-
+// steeringBackend is a backend that takes input into a running turn.
 type steeringBackend interface {
-	Steer(context.Context, Turn, string) error
+	// Steer delivers text to the running turn t. It calls store first and
+	// writes only after store succeeds, so a stored message always reaches
+	// the agent while the process lives. If t takes no more input, it returns
+	// ErrNotRunning without calling store.
+	Steer(ctx context.Context, t Turn, text string, store func() error) error
 }
 
-// Steer stores another user message, then delivers it to the running backend.
-// A delivery error leaves the message stored for continuation and thread reading.
-func (r *Runner) Steer(ctx context.Context, requestID, text string) (Turn, error) {
-	t, b, err := r.storeSteering(ctx, requestID, text)
+// steer joins s to the running turn of its session. It reports false, having
+// stored nothing, when s must be queued as a turn of its own.
+func (r *Runner) steer(ctx context.Context, s Submission) (Turn, bool, error) {
+	if s.Context != "" || len(s.Files) > 0 {
+		return Turn{}, false, nil // a steered message is text only
+	}
+	if t, err := r.store.Turn(ctx, s.RequestID); err == nil {
+		return t, true, nil
+	} else if !errors.Is(err, ErrNotFound) {
+		return Turn{}, true, fmt.Errorf("faden: submit %s: %w", s.RequestID, err)
+	}
+	running, ok, err := r.runningTurn(ctx, s.Session)
 	if err != nil {
-		return t, err
+		return Turn{}, true, fmt.Errorf("faden: submit %s: %w", s.RequestID, err)
 	}
-	if err := b.Steer(ctx, t, text); err != nil {
-		return t, fmt.Errorf("faden: steer %s: message stored: %w", requestID, err)
+	if !ok || running.Backend != s.Backend || running.Model != s.Model {
+		return Turn{}, false, nil
 	}
-	return t, nil
+	b, ok := r.backends[running.Backend].(steeringBackend)
+	if !ok {
+		return Turn{}, false, nil
+	}
+	var joined Turn
+	err = b.Steer(ctx, running, s.Input, func() error {
+		var err error
+		joined, err = r.join(ctx, s, running.RequestID)
+		return err
+	})
+	switch {
+	case err == nil:
+		return joined, true, nil
+	case joined.RequestID == "" && errors.Is(err, ErrNotRunning):
+		return Turn{}, false, nil
+	case joined.RequestID != "":
+		return joined, true, fmt.Errorf("faden: submit %s: joined %s, but not delivered: %w", s.RequestID, running.RequestID, err)
+	default:
+		return Turn{}, true, fmt.Errorf("faden: submit %s: %w", s.RequestID, err)
+	}
 }
 
-// storeSteering orders the status check and append with cancellation and
-// completion. Delivery holds no runner lock, so Cancel can stop a blocked write.
-func (r *Runner) storeSteering(ctx context.Context, requestID, text string) (Turn, steeringBackend, error) {
+// runningTurn returns the session's running turn if this runner runs it.
+func (r *Runner) runningTurn(ctx context.Context, session string) (Turn, bool, error) {
+	turns, err := r.store.Unfinished(ctx)
+	if err != nil {
+		return Turn{}, false, err
+	}
+	for _, t := range turns {
+		if t.Session != session || t.Status != Running {
+			continue
+		}
+		r.mu.Lock()
+		local := r.turns[t.RequestID] != nil && r.ctx.Err() == nil
+		r.mu.Unlock()
+		return t, local, nil
+	}
+	return Turn{}, false, nil
+}
+
+// join stores s's input as a user message of the running turn, then s as a
+// joined turn. steerMu orders it with Cancel and finish, so the running turn
+// cannot end between the check and the writes. A crash between the writes
+// leaves the message delivered twice at worst, never lost.
+func (r *Runner) join(ctx context.Context, s Submission, running string) (Turn, error) {
 	r.steerMu.Lock()
 	defer r.steerMu.Unlock()
-	r.mu.Lock()
-	t, err := r.store.Turn(ctx, requestID)
-	local := r.turns[requestID] != nil && r.ctx.Err() == nil
-	r.mu.Unlock()
+	t, err := r.store.Turn(ctx, running)
 	if err != nil {
-		return t, nil, fmt.Errorf("faden: steer %s: %w", requestID, err)
+		return Turn{}, err
 	}
 	if t.Status != Running {
-		return t, nil, fmt.Errorf("faden: steer %s: %w", requestID, ErrNotRunning)
+		return Turn{}, ErrNotRunning
 	}
-	b, ok := r.backends[t.Backend].(steeringBackend)
-	if !ok {
-		return t, nil, ErrCannotSteer
+	if err := r.append(ctx, Event{Session: s.Session, RequestID: running, Kind: UserMessage, Text: s.Input, Time: time.Now().UTC()}); err != nil {
+		return Turn{}, err
 	}
-	if !local {
-		return t, nil, fmt.Errorf("faden: steer %s: %w", requestID, ErrLocked)
+	joined, err := r.store.SubmitTurn(ctx, Turn{
+		RequestID: s.RequestID,
+		Session:   s.Session,
+		Input:     s.Input,
+		Backend:   s.Backend,
+		Model:     s.Model,
+	})
+	if err != nil {
+		return Turn{}, err
 	}
-	if err := r.append(ctx, Event{Session: t.Session, RequestID: requestID, Kind: UserMessage, Text: text, Time: time.Now().UTC()}); err != nil {
-		return t, nil, fmt.Errorf("faden: steer %s: %w", requestID, err)
+	joined.Status, joined.Joined = Joined, running
+	if err := r.store.SaveTurn(ctx, joined); err != nil {
+		return Turn{}, err
 	}
-	return t, b, nil
+	return joined, nil
 }

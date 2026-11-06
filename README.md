@@ -66,6 +66,8 @@ With faden's stored events in the continuation, both continued without redoing t
 
 A retried `Submit` with a known `requestId` returns the existing turn and runs nothing, so a client may retry freely.
 
+With `Steer` set, the input joins the session's running turn when its backend can take it (Claude, during a turn). Otherwise it is queued as usual. A joined turn has status `joined`, and `Progress.Joined` names the turn that answers it.
+
 ## What happens on a handover
 
 ```

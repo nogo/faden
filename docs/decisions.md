@@ -12,7 +12,8 @@
 
 - ~~**A session is a thread.** It records its current backend and one resume cursor per backend it has used.~~ *Changed 2026-11-02: a session records one resume cursor per backend; nothing read its current backend. See "Decided 2026-11-02 — the attempt".*
 - ~~**A turn** carries a session, a `requestId`, the input text, the backend and model, a status (`pending`, `running`, `done`, `failed`) and an attempt count. A session runs one turn at a time; later turns wait as `pending`, oldest first.~~ *Changed 2026-11-02: cancellation must end a turn permanently, including after restart.*
-- **A turn** carries a session, a `requestId`, the input text, the backend and model, a status (`pending`, `running`, `done`, `failed`, `cancelled`) and an attempt count. Done, failed and cancelled are final. A session runs one turn at a time; later turns wait as `pending`, oldest first.
+- ~~**A turn** carries a session, a `requestId`, the input text, the backend and model, a status (`pending`, `running`, `done`, `failed`, `cancelled`) and an attempt count. Done, failed and cancelled are final. A session runs one turn at a time; later turns wait as `pending`, oldest first.~~ *Changed 2026-11-06: a steered submission that joins a running turn needs a final record, so a retry finds it (#41).*
+- **A turn** carries a session, a `requestId`, the input text, the backend and model, a status (`pending`, `running`, `done`, `failed`, `cancelled`, `joined`) and an attempt count. Done, failed, cancelled and joined are final. A joined turn never runs: `Progress.Joined` names the running turn its input went into. A session runs one turn at a time; later turns wait as `pending`, oldest first.
 - **`requestId` is unique per store.** Submitting a known `requestId` returns the existing turn and runs nothing.
 - **An event is one completed item** of a turn: user message, assistant message, tool call, tool result, error, handover, turn started, turn ended. ~~It keeps the backend's native payload beside the normalized fields (text, tool name, action, input, output), as sidenote's `harness.Event` does.~~ *Changed 2026-11-02: only llama.cpp keeps a native payload; Claude Code and Codex events carry the normalized fields (text, tool name, action, input, output). See "Decided 2026-11-02 — memory".* Streaming fragments are not stored.
 - **A resume cursor is opaque JSON owned by its backend.** faden stores it and hands it back; only the backend reads it (as t3code does).
@@ -344,9 +345,9 @@ Not done: `Cancel` of a turn in a session another process owns fails with `ErrLo
 
 ## Decided 2026-11-06 — steer a running turn (#41)
 
-**`Runner.Steer(ctx, requestID, text) (Turn, error)` adds input to a running turn.** An optional backend method, `Steer(context.Context, Turn, string) error`, delivers it. Pending and final turns return `ErrNotRunning`; final turns remain unchanged. A backend without that method returns `ErrCannotSteer`, without storing an event. Codex and llama do not implement the method.
+~~**`Runner.Steer(ctx, requestID, text) (Turn, error)` adds input to a running turn.** An optional backend method, `Steer(context.Context, Turn, string) error`, delivers it. Pending and final turns return `ErrNotRunning`; final turns remain unchanged. A backend without that method returns `ErrCannotSteer`, without storing an event. Codex and llama do not implement the method.~~ *Changed 2026-11-06: a host needed two code paths, and a steer the backend refused after the store left a message in the thread that the agent never read. If the host then submitted it, the thread held it twice.*
 
-**The runner stores a `UserMessage` with the same request ID before delivery.** A delivery error leaves that event stored. Continuation, handover and `read_thread` see it as input. Steering a session owned elsewhere returns `ErrLocked`; there is no transport between owners.
+~~**The runner stores a `UserMessage` with the same request ID before delivery.** A delivery error leaves that event stored. Continuation, handover and `read_thread` see it as input. Steering a session owned elsewhere returns `ErrLocked`; there is no transport between owners.~~ *Changed 2026-11-06: the backend now decides before the runner stores; see "Decided 2026-11-06".*
 
 ~~**Claude owns an open stdin pipe until the last outstanding message receives a result.** Each sent message adds one expected result. Intermediate results contribute usage, but only the last emits `TurnEnded`. This chooses the queued-message interpretation; the fake CLI exercises it by answering each input separately.~~ *Changed 2026-11-06: the real CLI answers a message taken in at a tool call with the current result, so a turn with tool calls never ended. Each result also repeats the usage totals, so a steered turn counted the first answer twice.*
 
@@ -359,6 +360,18 @@ Not done: `Cancel` of a turn in a session another process owns fails with `ErrLo
 3. **stdin closed after a waiting message, before the first result:** Claude still answers it with a second result, then exits.
 4. **Usage:** each `result` repeats the process's totals so far. After a first answer of 411 output tokens, the second result reported 415.
 
-**Claude's stdin stays open until the first `result`, and the turn ends when Claude exits.** Results do not count messages, because one result can answer two. After the first result, `Steer` returns `ErrNotRunning`. Claude still answers every message it has read, then exits. Only then does the backend store one `TurnEnded` with the last result, and add that result's usage. `TestLiveSteer` (`FADEN_LIVE=1`) checks case 2 against the real CLI.
+**Claude's stdin stays open until the first `result`, and the turn ends when Claude exits.** Results do not count messages, because one result can answer two. After the first result, the backend's `Steer` returns `ErrNotRunning`, and the runner queues the submission. Claude still answers every message it has read, then exits. Only then does the backend store one `TurnEnded` with the last result, and add that result's usage. `TestLiveSteer` (`FADEN_LIVE=1`) checks case 2 against the real CLI.
 
 Rejected: keep stdin open and end at the result that answers the last message. Nothing in the stream shows whether a message joined the current answer, so the backend cannot know which result is the last.
+
+## Decided 2026-11-06 — steering is an option of Submit (#41), later the same day
+
+**`Submission.Steer` asks to put the input into the session's running turn.** It joins when this runner runs that turn, on a backend that takes input during a turn, with the same backend and model, and the submission has no `Context` or `Files`. `Submit` then returns a turn with status `joined`, and `Progress.Joined` names the running turn that answers it. In every other case, the submission is queued as a normal turn. Codex and llama always queue. `Runner.Steer` and `ErrCannotSteer` are gone. The only host, anvil, did not call them.
+
+**The `requestId` is the retry key for both paths.** A retried steered submission finds its turn record and changes nothing.
+
+**The backend decides before the runner stores.** The backend method is `Steer(ctx, t, text, store func() error) error`. It returns `ErrNotRunning` without calling `store` when the turn takes no more input; the runner then queues. Otherwise it calls `store`, then writes. Claude holds stdin open during a steer: if the first result arrives between the store and the write, stdin closes after the write, and Claude answers the message. A stored message therefore always reaches the agent while the process lives. If the process dies, the turn continues, and the continuation carries the message.
+
+**The runner stores the event, then the joined record.** A crash between the two writes leaves a message delivered twice at worst, never lost.
+
+Rejected: a new `Runner.Send` beside `Submit`. One entry point with an option was enough, and `Submit` already carries the retry key.
