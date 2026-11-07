@@ -156,3 +156,18 @@ func TestFailureKinds(t *testing.T) {
 		t.Fatalf("plain failure: %v", err)
 	}
 }
+
+// Only assistant and user lines carry a message object. Any other line may
+// name a string "message", and the turn must go on past it: a host saw a
+// turn fail at a tool call with "cannot unmarshal string into ... .message".
+func TestLineWithStringMessageIsSkipped(t *testing.T) {
+	var events []faden.Event
+	o := &output{emit: func(e faden.Event) error { events = append(events, e); return nil }, addUsage: func(faden.ModelUsage) {}}
+	err := parse(o,
+		`{"type":"system","subtype":"invented_notice","message":"a status for people, not for faden"}`,
+		`{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"still here"}]}}`,
+		`{"type":"result","result":"still here"}`)
+	if err != nil || len(events) == 0 || events[0].Kind != faden.AssistantMessage || events[0].Text != "still here" {
+		t.Fatalf("events=%+v err=%v", events, err)
+	}
+}

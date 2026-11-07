@@ -290,10 +290,9 @@ func (s *output) line(line []byte) error {
 		Error       string       `json:"error"`
 		QuotaLimits *quotaLimits `json:"quotaLimits"`
 		Type        string       `json:"type"`
-		Message     struct {
-			ID      string  `json:"id"`
-			Content []block `json:"content"`
-		} `json:"message"`
+		// Raw until the type is known: only assistant and user lines carry a
+		// message object, and other lines may carry a string under that name.
+		Raw json.RawMessage `json:"message"`
 	}
 	if err := json.Unmarshal(line, &msg); err != nil {
 		return err
@@ -315,10 +314,17 @@ func (s *output) line(line []byte) error {
 	if msg.Type != "assistant" && msg.Type != "user" {
 		return nil
 	}
-	if msg.Type == "assistant" {
-		s.cursor.LastAssistantID = msg.Message.ID
+	var message struct {
+		ID      string  `json:"id"`
+		Content []block `json:"content"`
 	}
-	for _, v := range msg.Message.Content {
+	if err := json.Unmarshal(msg.Raw, &message); err != nil {
+		return err
+	}
+	if msg.Type == "assistant" {
+		s.cursor.LastAssistantID = message.ID
+	}
+	for _, v := range message.Content {
 		var e faden.Event
 		switch v.Type {
 		case "text":
