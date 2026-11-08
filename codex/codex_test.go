@@ -582,3 +582,35 @@ func TestContextIsSentWithEmptyInput(t *testing.T) {
 	}
 	t.Fatal("no turn/start request")
 }
+
+func TestLongOutputLinePasses(t *testing.T) {
+	// A command output of 1 MiB is one line of the app-server's stream.
+	big := strings.Repeat("x", 1<<20)
+	dir := setup(t, `{"method":"item/completed","params":{"item":{"type":"commandExecution","id":"item_1","command":"cat big","status":"completed","aggregatedOutput":"`+big+`","exitCode":0}}}
+{"method":"turn/completed","params":{"turn":{"id":"turn_1","status":"completed"}}}
+`)
+	b, store := newBackend(t, dir)
+	turn := faden.Turn{Session: "s", RequestID: "r1", Input: "cat big"}
+	if err := b.Run(t.Context(), turn, newAttempt(t, store, turn)); err != nil {
+		t.Fatal(err)
+	}
+	events, err := faden.CollectEvents(store.Events(t.Context(), "s", 0))
+	if err != nil || len(events) == 0 || len(events[len(events)-2].Output) != len(big) {
+		t.Fatalf("events: %d, %v", len(events), err)
+	}
+}
+
+func TestTooLongLineFailsTheTurn(t *testing.T) {
+	// Over the 16 MiB line cap: the turn fails instead of waiting for a
+	// runtime that cannot hand over the rest of the output.
+	big := strings.Repeat("x", 17<<20)
+	dir := setup(t, `{"method":"item/completed","params":{"item":{"type":"commandExecution","id":"item_1","command":"cat big","status":"completed","aggregatedOutput":"`+big+`","exitCode":0}}}
+{"method":"turn/completed","params":{"turn":{"id":"turn_1","status":"completed"}}}
+`)
+	b, store := newBackend(t, dir)
+	turn := faden.Turn{Session: "s", RequestID: "r1", Input: "cat big"}
+	err := b.Run(t.Context(), turn, newAttempt(t, store, turn))
+	if err == nil || !strings.Contains(err.Error(), "too long") {
+		t.Fatalf("err = %v, want a too-long line", err)
+	}
+}

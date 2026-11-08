@@ -177,6 +177,9 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 	defer b.track(ctx, runCtx, t.RequestID, x.conn)()
 	finish := func(ended bool, runErr error) error {
 		stdinW.Close()
+		// Nothing reads stdout from here on. Closed, it fails the runtime's
+		// copy of what Codex still writes, instead of blocking it forever.
+		stdoutR.Close()
 		var out outcome
 		if ended && runErr == nil {
 			select {
