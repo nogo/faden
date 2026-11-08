@@ -3,6 +3,7 @@ package handover_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"runtime"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/nogo/faden"
 	"github.com/nogo/faden/handover"
+	"github.com/nogo/faden/memstore"
 )
 
 func TestSelection(t *testing.T) {
@@ -86,4 +88,91 @@ func TestReadThreadReadsOnlyWhatItAnswers(t *testing.T) {
 	if events.read != 101 {
 		t.Fatalf("read %d events of 10000, want 101", events.read)
 	}
+}
+
+func TestSelectionAttributesRoles(t *testing.T) {
+	items := handover.Select([]faden.Event{
+		{Seq: 1, Kind: faden.UserMessage, Text: "ask"},
+		{Seq: 2, Kind: faden.AssistantMessage, Text: "answer"},
+		{Seq: 3, Kind: faden.ToolResult, Tool: "bash", Output: "ok"},
+	}, "", 0)
+	var roles []string
+	for _, it := range items {
+		roles = append(roles, it.Role)
+	}
+	if want := []string{"user", "assistant", "user"}; strings.Join(roles, ",") != strings.Join(want, ",") {
+		t.Fatalf("roles = %v, want %v", roles, want)
+	}
+}
+
+func TestSelectionKeepsAnItemThatFillsTheBudgetExactly(t *testing.T) {
+	events := []faden.Event{
+		{Seq: 1, Kind: faden.UserMessage, Text: "first"},
+		{Seq: 2, Kind: faden.AssistantMessage, Text: "older"},
+		{Seq: 3, Kind: faden.AssistantMessage, Text: "newest"},
+	}
+	budget := len("req") + len("first") + len("newest")
+	items := handover.Select(events, "req", budget)
+	if len(items) != 3 || items[2].Text != "newest" || !strings.Contains(items[1].Text, "2-2") {
+		t.Fatalf("items = %+v", items)
+	}
+}
+
+func TestItemOfExactlyTheLimitIsKeptWhole(t *testing.T) {
+	// Kind, tool and the empty text, action and input fields, each followed
+	// by a space; the output fills the item to exactly 240 runes.
+	prefix := "tool_result x    "
+	output := strings.Repeat("界", 240-utf8.RuneCountInString(prefix))
+	items := handover.Select([]faden.Event{{Seq: 1, Kind: faden.ToolResult, Tool: "x", Output: output}}, "", 0)
+	if want := prefix + output; items[0].Text != want {
+		t.Fatalf("item = %q (%d runes), want it whole", items[0].Text, utf8.RuneCountInString(items[0].Text))
+	}
+}
+
+func TestPromptWithoutCatchUpPutsContextBeforeInput(t *testing.T) {
+	turn := faden.Turn{Session: "s", RequestID: "r", Input: "do it"}
+	a := attempt(t, turn)
+	if got := handover.Prompt(turn, a); got != "do it" {
+		t.Fatalf("prompt = %q", got)
+	}
+	turn.Context = "you are in /work"
+	if got := handover.Prompt(turn, a); got != "you are in /work\n\ndo it" {
+		t.Fatalf("prompt = %q", got)
+	}
+}
+
+func TestReadThreadIncludesBothEndsAndItsOwnSession(t *testing.T) {
+	got, err := handover.ReadThread(context.Background(), &countingEvents{n: 10}, "s", json.RawMessage(`{"session":"s","from":2,"to":4}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seqs []string
+	for line := range strings.SplitSeq(got, "\n") {
+		var e faden.Event
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			t.Fatalf("line %q: %v", line, err)
+		}
+		seqs = append(seqs, fmt.Sprint(e.Seq))
+	}
+	if strings.Join(seqs, ",") != "2,3,4" {
+		t.Fatalf("seqs = %v, want 2,3,4", seqs)
+	}
+	if _, err := handover.ReadThread(context.Background(), &countingEvents{n: 10}, "s", json.RawMessage(`{"session":"other","from":1,"to":2}`)); err == nil {
+		t.Fatal("read another session")
+	}
+}
+
+// attempt submits turn to an empty memstore and returns an attempt for it,
+// which has no catch-up.
+func attempt(t *testing.T, turn faden.Turn) *faden.Attempt {
+	t.Helper()
+	store := memstore.New()
+	if _, err := store.SubmitTurn(t.Context(), turn); err != nil {
+		t.Fatal(err)
+	}
+	a, err := faden.NewAttempt(t.Context(), store, turn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
 }

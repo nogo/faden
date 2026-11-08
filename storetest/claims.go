@@ -48,6 +48,25 @@ func claims(t *testing.T, newStorage func(t *testing.T) Storage) {
 		}
 	}
 
+	t.Run("SubmitSeesTurnsTheOtherStoreAddedToEverySession", func(t *testing.T) {
+		a, b := pair(t)
+		if _, err := a.SubmitTurn(ctx, faden.Turn{RequestID: "t1", Session: "t", Input: "in", Backend: "a"}); err != nil {
+			t.Fatal(err)
+		}
+		// b knows both sessions, then adds a turn to each.
+		for _, sess := range []string{"s", "t"} {
+			if _, err := b.SubmitTurn(ctx, faden.Turn{RequestID: "from-b-" + sess, Session: sess, Input: "b's", Backend: "a"}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, sess := range []string{"s", "t"} {
+			got, err := a.SubmitTurn(ctx, faden.Turn{RequestID: "from-b-" + sess, Session: sess, Input: "a's", Backend: "a"})
+			if err != nil || got.Input != "b's" {
+				t.Fatalf("session %s: resubmit = %+v, %v; want b's turn", sess, got, err)
+			}
+		}
+	})
+
 	t.Run("ClaimOfLiveSessionIsLocked", func(t *testing.T) {
 		a, b := pair(t)
 		if err := a.Claim(ctx, "s"); err != nil {

@@ -350,6 +350,36 @@ func Run(t *testing.T, newStorage func(t *testing.T) Storage) {
 		}
 	})
 
+	t.Run("SubmitToAKnownSessionReturnsTheStoredTurn", func(t *testing.T) {
+		s := newStorage(t).Open()
+		defer s.Close()
+		s.SubmitTurn(ctx, turn("r1", "s1"))
+		got, err := s.SubmitTurn(ctx, turn("r2", "s1"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		stored, _ := s.Turn(ctx, "r2")
+		if got.RequestID != "r2" || got.Status != faden.Pending || got.Created.IsZero() || !got.Created.Equal(stored.Created) {
+			t.Fatalf("submitted turn = %+v, stored %+v", got, stored)
+		}
+	})
+
+	t.Run("UnfinishedOrdersBySubmissionNotByRequestID", func(t *testing.T) {
+		s := newStorage(t).Open()
+		defer s.Close()
+		for _, id := range []string{"z", "a", "m"} {
+			s.SubmitTurn(ctx, turn(id, "s1"))
+		}
+		got, _ := s.Unfinished(ctx)
+		var ids []string
+		for _, t := range got {
+			ids = append(ids, t.RequestID)
+		}
+		if strings.Join(ids, ",") != "z,a,m" {
+			t.Fatalf("unfinished = %v, want z,a,m", ids)
+		}
+	})
+
 	t.Run("UnfinishedListsPendingAndRunningOldestFirst", func(t *testing.T) {
 		s := newStorage(t).Open()
 		defer s.Close()

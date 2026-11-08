@@ -496,3 +496,19 @@ func TestFilesSendImageAsBlockAndTextFileAsPathLine(t *testing.T) {
 		t.Fatalf("outside symlink turn = %+v, %v", got, err)
 	}
 }
+
+func TestLongOutputLinePasses(t *testing.T) {
+	// A tool result of 1 MiB is one line of Claude's stream.
+	big := strings.Repeat("x", 1<<20)
+	output := `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"` + big + `"}]}}` + "\n" + `{"type":"result","result":"done"}` + "\n"
+	s := openStore(t, t.TempDir())
+	b, _ := New(Config{Runtime: inspectRuntime{s, output, 0}})
+	turn := faden.Turn{Session: "s", RequestID: "r"}
+	if err := b.Run(t.Context(), turn, newAttempt(t, s, turn)); err != nil {
+		t.Fatal(err)
+	}
+	events, err := faden.CollectEvents(s.Events(t.Context(), "s", 0))
+	if err != nil || len(events) != 2 || len(events[0].Output) != len(big) {
+		t.Fatalf("events: %d, %v", len(events), err)
+	}
+}
