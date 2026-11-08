@@ -36,10 +36,9 @@ type Runner struct {
 	steerMu sync.Mutex // orders steering appends, cancellation and completion
 
 	// mu guards active, turns, changed, draining, fatal and watchers. It is
-	// held only for work in memory, with one exception: the status change of
-	// a turn (run starting it, finish, Cancel) reads and writes the store
-	// under mu, so a cancel and a finish cannot both win. An event append
-	// never holds it.
+	// held only for work in memory, with one exception: update reads and
+	// writes a turn under mu, so two status changes cannot both win. An
+	// event append never holds it.
 	mu       sync.Mutex
 	turns    map[string]context.CancelFunc
 	active   map[string]bool // sessions with a worker
@@ -297,20 +296,31 @@ func (r *Runner) adopt(session string) (bool, error) {
 		if t.Session != session || t.Status != Running {
 			continue
 		}
+		// A given-up turn never continues, so nothing else would stop what its
+		// last attempt left running. The claim keeps Attempts from changing;
+		// only a Cancel can change the turn meanwhile, and it stops it too.
+		var stopErr error
 		if t.Attempts >= maxAttempts {
+			if b, ok := r.backends[t.Backend]; ok {
+				stopErr = b.Stop(r.ctx, t)
+			}
+		}
+		_, err := r.update(r.ctx, t.RequestID, func(t *Turn) bool {
+			if t.Status != Running {
+				return false
+			}
+			if t.Attempts < maxAttempts {
+				t.Attempts++
+				return true
+			}
 			t.Status = Failed
 			t.Error = fmt.Sprintf("faden: turn stopped after %d attempts; send a new turn", t.Attempts)
-			// A given-up turn never continues, so nothing else would stop
-			// what its last attempt left running.
-			if b, ok := r.backends[t.Backend]; ok {
-				if err := b.Stop(r.ctx, t); err != nil {
-					t.Error += fmt.Sprintf("; its leftover could not be stopped: %v", err)
-				}
+			if stopErr != nil {
+				t.Error += fmt.Sprintf("; its leftover could not be stopped: %v", stopErr)
 			}
-		} else {
-			t.Attempts++
-		}
-		if err := r.store.SaveTurn(r.ctx, t); err != nil {
+			return true
+		})
+		if err != nil {
 			return true, fmt.Errorf("turn %s: %w", t.RequestID, err)
 		}
 	}
@@ -355,27 +365,22 @@ func (r *Runner) Submit(ctx context.Context, s Submission) (Turn, error) {
 func (r *Runner) Cancel(ctx context.Context, requestID string) (Turn, error) {
 	r.steerMu.Lock()
 	defer r.steerMu.Unlock()
-	r.mu.Lock()
-	t, err := r.store.Turn(ctx, requestID)
+	var running bool
+	var stop context.CancelFunc
+	t, err := r.update(ctx, requestID, func(t *Turn) bool {
+		if t.Status.Final() {
+			return false
+		}
+		running, stop = t.Status == Running, r.turns[requestID]
+		t.Status = Cancelled
+		return true
+	})
 	if err != nil {
-		r.mu.Unlock()
 		return Turn{}, fmt.Errorf("faden: cancel %s: %w", requestID, err)
 	}
-	if t.Status.Final() {
-		r.mu.Unlock()
-		return t, nil
+	if stop != nil {
+		stop()
 	}
-	running := t.Status == Running
-	t.Status = Cancelled
-	if err := r.store.SaveTurn(ctx, t); err != nil {
-		r.mu.Unlock()
-		return Turn{}, fmt.Errorf("faden: cancel %s: %w", requestID, err)
-	}
-	r.broadcast()
-	if cancel := r.turns[requestID]; cancel != nil {
-		cancel()
-	}
-	r.mu.Unlock()
 	if running {
 		// Only a turn that started has work in the thread to cut off. A
 		// pending turn leaves no event, so no reader of the thread meets a
@@ -576,22 +581,37 @@ func (r *Runner) broadcast() {
 func (r *Runner) finish(t Turn, status Status, msg string) error {
 	r.steerMu.Lock()
 	defer r.steerMu.Unlock()
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	stored, err := r.store.Turn(context.WithoutCancel(r.ctx), t.RequestID)
+	_, err := r.update(context.WithoutCancel(r.ctx), t.RequestID, func(stored *Turn) bool {
+		if stored.Status == Cancelled {
+			stored.Usage = t.Usage
+			return true
+		}
+		t.Status, t.Error = status, msg
+		*stored = t
+		return true
+	})
 	if err != nil {
-		return err
-	}
-	if stored.Status == Cancelled {
-		stored.Usage = t.Usage
-		return r.store.SaveTurn(context.WithoutCancel(r.ctx), stored)
-	}
-	t.Status, t.Error = status, msg
-	if err := r.store.SaveTurn(context.WithoutCancel(r.ctx), t); err != nil {
 		return fmt.Errorf("faden: finish turn %s: %w", t.RequestID, err)
 	}
-	r.broadcast()
 	return nil
+}
+
+// update is the only way the runner changes a stored turn. It reads the turn
+// and calls change under mu, then saves it if change reports true and wakes
+// every Wait. change may use the fields mu guards. update returns the turn as
+// stored afterwards; change must not call the store or block.
+func (r *Runner) update(ctx context.Context, requestID string, change func(*Turn) bool) (Turn, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	t, err := r.store.Turn(ctx, requestID)
+	if err != nil || !change(&t) {
+		return t, err
+	}
+	if err := r.store.SaveTurn(ctx, t); err != nil {
+		return Turn{}, err
+	}
+	r.broadcast()
+	return t, nil
 }
 
 // recordInput stores the turn's user message unless an earlier attempt did.
@@ -610,27 +630,32 @@ func (r *Runner) recordInput(a *Attempt, h history) error {
 
 // run runs one turn. A running turn already has its attempt raised by Open.
 func (r *Runner) run(t Turn) error {
-	r.mu.Lock()
-	t, err := r.store.Turn(r.ctx, t.RequestID)
+	id := t.RequestID
+	var ctx context.Context
+	var cancel context.CancelFunc
+	t, err := r.update(r.ctx, id, func(t *Turn) bool {
+		if t.Status.Final() {
+			return false
+		}
+		// Registered before the turn starts, so a Cancel that sees it running
+		// can stop it.
+		ctx, cancel = context.WithCancel(r.ctx)
+		r.turns[id] = cancel
+		if t.Status != Pending {
+			return false
+		}
+		t.Status, t.Attempts = Running, 1
+		return true
+	})
+	if cancel != nil {
+		defer func() { cancel(); r.mu.Lock(); delete(r.turns, id); r.mu.Unlock() }()
+	}
 	if err != nil {
-		r.mu.Unlock()
-		return err
+		return fmt.Errorf("faden: start turn %s: %w", id, err)
 	}
 	if t.Status.Final() {
-		r.mu.Unlock()
 		return nil
 	}
-	ctx, cancel := context.WithCancel(r.ctx)
-	r.turns[t.RequestID] = cancel
-	defer func() { cancel(); r.mu.Lock(); delete(r.turns, t.RequestID); r.mu.Unlock() }()
-	if t.Status == Pending {
-		t.Status, t.Attempts = Running, 1
-		if err := r.store.SaveTurn(r.ctx, t); err != nil {
-			r.mu.Unlock()
-			return fmt.Errorf("faden: start turn %s: %w", t.RequestID, err)
-		}
-	}
-	r.mu.Unlock()
 	backend, ok := r.backends[t.Backend]
 	if !ok {
 		return r.finish(t, Failed, fmt.Sprintf("faden: no backend %q", t.Backend))

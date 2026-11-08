@@ -105,9 +105,11 @@ func (r *Runner) join(ctx context.Context, s Submission, running string) (Turn, 
 	if err != nil {
 		return Turn{}, err
 	}
-	joined.Status, joined.Joined = Joined, running
-	if err := r.store.SaveTurn(ctx, joined); err != nil {
-		return Turn{}, err
-	}
-	return joined, nil
+	return r.update(ctx, joined.RequestID, func(t *Turn) bool {
+		if t.Status != Pending {
+			return false
+		}
+		t.Status, t.Joined = Joined, running
+		return true
+	})
 }

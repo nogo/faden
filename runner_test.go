@@ -802,3 +802,77 @@ func TestRunnerRunsTurnsOnMemstore(t *testing.T) {
 		t.Fatalf("events = %v, session = %+v", texts, sess)
 	}
 }
+
+// cancelOnAdopt is a store that runs cancel once, between the runner's claim
+// of a session and its save of the session's running turns: the moment a host
+// may cancel a turn the runner is taking over.
+type cancelOnAdopt struct {
+	faden.Store
+	mu      sync.Mutex // guards claimed
+	claimed bool
+	cancel  func()
+	once    sync.Once
+}
+
+func (s *cancelOnAdopt) Claim(ctx context.Context, session string) error {
+	err := s.Store.Claim(ctx, session)
+	s.mu.Lock()
+	s.claimed = s.claimed || err == nil
+	s.mu.Unlock()
+	return err
+}
+
+func (s *cancelOnAdopt) Unfinished(ctx context.Context) ([]faden.Turn, error) {
+	turns, err := s.Store.Unfinished(ctx)
+	s.mu.Lock()
+	claimed := s.claimed
+	s.mu.Unlock()
+	if claimed && len(turns) > 0 {
+		s.once.Do(s.cancel)
+	}
+	return turns, err
+}
+
+func TestCancelDuringAdoptionStaysCancelled(t *testing.T) {
+	inner := memstore.New()
+	store := &cancelOnAdopt{Store: inner}
+	ran := make(chan string, 2)
+	b := &fake{run: func(_ context.Context, turn faden.Turn, _ *faden.Attempt) error {
+		ran <- turn.RequestID
+		return nil
+	}}
+	r, err := faden.Open(store, map[string]faden.Backend{"fake": b}, faden.Options{Poll: 5 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	cancelled := make(chan error, 1)
+	store.cancel = func() {
+		_, err := r.Cancel(t.Context(), "r1")
+		cancelled <- err
+	}
+	// A running turn whose owner died: the runner's poll adopts it.
+	if _, err := inner.SubmitTurn(t.Context(), faden.Turn{RequestID: "r1", Session: "s1", Input: "x", Backend: "fake"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := inner.SaveTurn(t.Context(), faden.Turn{RequestID: "r1", Session: "s1", Input: "x", Backend: "fake", Progress: faden.Progress{Status: faden.Running, Attempts: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-cancelled; err != nil {
+		t.Fatal(err)
+	}
+	// The session's worker serves its turns oldest first, so once r2 is done
+	// the adoption of r1 is over.
+	if _, err := r.Submit(t.Context(), sub("s1", "r2", "y")); err != nil {
+		t.Fatal(err)
+	}
+	if got := wait(t, r, "r2"); got.Status != faden.Done {
+		t.Fatalf("r2 = %+v", got)
+	}
+	if got := wait(t, r, "r1"); got.Status != faden.Cancelled {
+		t.Fatalf("r1 = %+v, want cancelled", got)
+	}
+	if id := <-ran; id != "r2" {
+		t.Fatalf("backend ran %s first, want only r2", id)
+	}
+}
