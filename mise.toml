@@ -22,14 +22,7 @@ fi
 
 [tasks.tidy]
 description = "Check go.mod and go.sum are tidy"
-run = """
-BEFORE=$(cat go.mod go.sum 2>/dev/null | sha256sum)
-go mod tidy
-if [ "$BEFORE" != "$(cat go.mod go.sum 2>/dev/null | sha256sum)" ]; then
-    echo "FAIL: go.mod/go.sum changed by tidy — review and commit the changes"
-    exit 1
-fi
-"""
+run = "go mod tidy -diff"
 
 [tasks.build]
 description = "Build every package"

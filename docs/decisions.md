@@ -168,7 +168,8 @@ Rejected: one constructor for all backends (`faden.New("claude", cfg)`), which n
 
 - **`go 1.27` in `go.mod`, not a patch version.** The `go` line is a minimum for every host that embeds faden; `go 1.27.3` would force sidenote (on 1.27.1) to upgrade. `mise.toml` still pins the toolchain faden is checked with.
 - **MIT license.** The shortest common license that pkg.go.dev recognizes. Rejected: Apache-2.0, whose patent grant and NOTICE rules weigh more than a personal library needs; BSD-3, whose extra clause adds nothing here.
-- **CI runs `mise run check`,** the local gate, on Linux. Actions are pinned by commit SHA.
+- ~~**CI runs `mise run check`,** the local gate, on Linux. Actions are pinned by commit SHA.~~ *Changed 2026-11-12: sidenote runs `Local` on macOS, and a Linux-only `/proc` read shipped unnoticed.*
+- **CI runs `mise run check`,** the local gate, on Linux and macOS. Actions are pinned by commit SHA.
 
 ## Decided 2026-11-02 — prepare each attempt (#21)
 
