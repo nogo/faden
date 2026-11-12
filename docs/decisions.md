@@ -389,3 +389,23 @@ Rejected: a new `Runner.Send` beside `Submit`. One entry point with an option wa
 - Open: Codex says the effort holds for later turns too. Whether a later turn without an effort, on a resumed thread, keeps the earlier level is not measured.
 
 Rejected: an opaque `Turn.Meta` for host data. It had no user beside effort, and a typed field shows each backend what to send.
+
+## Decided 2026-11-12 — ACP agents
+
+**Package `acp` runs any agent that speaks the Agent Client Protocol, version 1, over stdio.** t3code uses ACP for its long tail of agents (Grok, Kiro, Fx, Antigravity and the ACP registry). It keeps native drivers for Claude Code and Codex. faden does the same: the `claude` and `codex` backends stay, because the measured continuation depends on what each CLI does after a kill. Read in `t3code/packages/effect-acp` and `packages/provider-acp` (checkout 268e5810cd, 2026-11-05).
+
+- **The host gives the command,** such as `{"gemini", "--experimental-acp"}`, in `Config.Command`. `Setup.Args` follow it, and `Setup.Env` joins the command's environment.
+- **The cursor is `{"session_id": ...}`.** It is stored as soon as `session/new` answers, before `session/prompt` is sent. A later attempt sends `session/resume` when the agent offers `sessionCapabilities.resume`, otherwise `session/load` when it offers `loadSession`. The history that `session/load` replays is not stored again. An agent that offers neither gets a new session, and the backend stores an error event that says the agent lost the thread.
+- **Version 1 only.** An agent that answers `initialize` with another version fails the turn. Version 2 is in the t3code schema but not in the agents read.
+- **Events carry normalized fields only.** Text chunks join into one assistant message, ended by a tool call or the end of the prompt. A tool call is stored when it leaves `pending`, so a call that is still waiting for permission is not stored. Its result is stored when it is `completed` or `failed`. `Tool` is the ACP kind (`read`, `edit`, `execute`, ...), `Action` is the title, and `Input` is `rawInput`. Thought chunks are fragments only.
+- **The prompt ends with `stopReason`.** It is the text of `TurnEnded`. Only `end_turn` is done. ACP error `-32000` (authentication required) is `faden.UnavailableError`.
+- **Permission requests get `reject_once`,** as Codex approvals are declined. `Config.Approve` picks `allow_once` instead, for a host whose runtime is the sandbox. faden offers no file system and no terminal to the agent. Other requests from the agent get "not supported".
+- **The working directory is `Setup.Dir`, or the host's when that is empty.** ACP requires an absolute `cwd`, and the backend cannot see the runtime's directory.
+- **`Setup.System` goes before the prompt of a new session only.** ACP v1 has no field for it.
+- **Model, effort and usage are not sent or read.** ACP v1 has no standard field for them. The host puts model flags in the command.
+- **Files go as path lines,** images included. Not every agent takes images.
+- **Cancellation sends `session/cancel`, then stops the agent.** `ContinuesWithoutPrompt` is false: the runner sends the killed turn's stored events.
+
+Tested with a fake agent and invented lines (`go test ./acp`), including a host killed with SIGKILL that continues through `session/load`. No live ACP agent was run: none is installed on the test machine.
+
+Rejected: replacing the `claude` and `codex` backends with their ACP adapters. One package would cover all agents, but the continuation measured on each native CLI would have to be measured again through an adapter.

@@ -11,7 +11,7 @@ Base: [Effective Go](https://go.dev/doc/effective_go), [Go Code Review Comments]
 ## Go
 
 ### Structure
-- faden is embedded by other systems. The root package `faden` holds the session, turn, event, `Store`, `Backend` and `Attempt` types and the runner. Every other concept is a package at the module root (`jsonl/`, `sqlite/`, `storetest/`, `claude/`, `llama/`, `container/`, `handover/`); a package no host imports lives under `internal/`.
+- faden is embedded by other systems. The root package `faden` holds the session, turn, event, `Store`, `Backend` and `Attempt` types and the runner. Every other concept is a package at the module root (`jsonl/`, `sqlite/`, `storetest/`, `claude/`, `codex/`, `acp/`, `llama/`, `container/`, `handover/`); a package no host imports lives under `internal/`.
 - One concept per package, named for it, never `util` or `common`.
 - Every package starts with a package comment saying what it is and when to reach for it; `doc.go` when the package has several files.
 - An interface is declared where it's consumed and holds only the methods that consumer calls. `Store` and `Backend` are the exceptions: hosts implement them, so they live in the root package.
