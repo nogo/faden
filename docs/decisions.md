@@ -48,6 +48,7 @@
 - ~~**`jsonl`:** one append-only file per session in a directory, synced before a write returns. A torn last line is cut at open. A lock file (`flock`) makes one process the owner; a second gets `ErrLocked` at once.~~ *Changed 2026-11-05: the lock is per session, see "Decided 2026-11-05 — one owner per session" (#20).*
 - **`jsonl`:** one append-only file per session in a directory, synced before a write returns. A torn last line is cut when a process claims the session or appends to it.
 - **`sqlite`:** takes the host's `*sql.DB`, so faden imports no driver. Tables carry a prefix (default `faden_`) so a host database can hold them. A host can bind the store to its own `*sql.Tx`, so a submission commits with the host's own write (invest stores a question with its book).
+- **`golang.org/x/sys` is a dependency of `Local` on macOS only.** It reads a process's start time; see "Restart" under "Decided 2026-11-01". It was already in the module graph through the test driver.
 - **`modernc.org/sqlite` is a test dependency of `sqlite` only.** The conformance suite needs a real driver; invest already uses this one (pure Go, no cgo). No non-test file imports it.
 
 ### Handover
@@ -109,7 +110,7 @@ The protocol shapes come from sidenote's adapter and t3code as described in the 
 
 This supersedes the earlier Restart rule that assigns `Local.PIDDir/process.pid` to one sequential owner. It also supersedes the parent-death signal as a recovery aid. ~~Backends call `Stop(ctx, t.RequestID)` before continuing an attempt above one, including turns that run no command.~~ *Changed 2026-11-02 (b14c8e6, 6a5d6ad): `Backend` has `Stop(ctx, turn)`, and the runner calls it before an attempt above one and when `Open` gives a turn up after three attempts; a backend forwards to its runtime.* Each key has one command owner at a time. Hosts that share a record directory across stores must give those stores distinct request IDs.
 
-A record contains the process group leader's PID and its Linux start time from `/proc/<pid>/stat`. Recovery kills the group only when that identity still matches. Missing, malformed, and stale records are discarded. Local leaves the leader alive after host death so recovery can still verify it. Cancellation and normal completion kill the local group.
+~~A record contains the process group leader's PID and its Linux start time from `/proc/<pid>/stat`.~~ *Changed 2026-11-12: faden runs on Linux and macOS, and sidenote runs `Local` on a Mac.* A record contains the process group leader's PID and its start time: field 22 of `/proc/<pid>/stat` on Linux, `p_starttime` from `sysctl kern.proc.pid` on macOS. The standard library has no start time; `golang.org/x/sys/unix` (`SysctlKinfoProc`) gives it on macOS. Rejected: `ps -o lstart=`, which forks once per command and counts whole seconds. Recovery kills the group only when that identity still matches. Missing, malformed, and stale records are discarded. Local leaves the leader alive after host death so recovery can still verify it. Cancellation and normal completion kill the local group.
 
 ### Runtimes
 

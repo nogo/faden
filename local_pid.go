@@ -33,23 +33,6 @@ func stopLocalGroup(pid int) error {
 	return err
 }
 
-// processStart reads field 22 after the parenthesized command, which can contain spaces.
-func processStart(pid int) (string, error) {
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-	if err != nil {
-		return "", err
-	}
-	end := strings.LastIndexByte(string(data), ')')
-	if end < 0 {
-		return "", errors.New("faden: invalid process stat")
-	}
-	fields := strings.Fields(string(data[end+1:]))
-	if len(fields) < 20 {
-		return "", errors.New("faden: incomplete process stat")
-	}
-	return fields[19], nil
-}
-
 func stopLocalLeftover(path string) error {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {

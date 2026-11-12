@@ -2,10 +2,12 @@ package faden_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -93,8 +95,12 @@ func TestLocalKillsDeadHostsGroupBeforeContinuation(t *testing.T) {
 	}
 	for _, pid := range pids {
 		pollLocal(t, func() bool {
-			data, err := os.ReadFile("/proc/" + pid + "/stat")
-			return os.IsNotExist(err) || err == nil && strings.Contains(string(data), ") Z ")
+			id, err := strconv.Atoi(pid)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The leftovers' parent died, so init reaps them and kill finds no process.
+			return errors.Is(syscall.Kill(id, 0), syscall.ESRCH)
 		})
 	}
 }

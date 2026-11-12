@@ -35,6 +35,7 @@ A restart picks the thread up where it was cut. A switch to another model hands 
 
 ## Constraints
 
+- **Linux and macOS.** Hosts run faden on both; CI checks both.
 - **Go, standard library only.** The host brings the SQLite driver. Every other dependency needs a line in `docs/decisions.md` first.
 - **The host owns everything outside the thread:** the workspace, the container, credentials, the schedule and the user interface.
 - **No secret in the store.** A credential reaches a CLI through its environment or a file the host provides, never through the thread or an argument.
