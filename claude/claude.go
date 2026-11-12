@@ -151,6 +151,9 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 	if t.Model != "" {
 		argv = append(argv, "--model", t.Model)
 	}
+	if t.Effort != "" {
+		argv = append(argv, "--effort", t.Effort)
+	}
 	argv = append(argv, b.cfg.Args...)
 	setup := a.Setup()
 	runtime := b.cfg.Runtime

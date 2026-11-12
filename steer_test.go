@@ -119,6 +119,7 @@ func TestSteerQueuesWhenTheRunningTurnCannotTakeIt(t *testing.T) {
 		{name: "input closed", steer: refuse},
 		{name: "backend cannot steer"},
 		{name: "other model", steer: deliver, edit: func(s *faden.Submission) { s.Model = "other" }},
+		{name: "other effort", steer: deliver, edit: func(s *faden.Submission) { s.Effort = "high" }},
 		{name: "files", steer: deliver, edit: func(s *faden.Submission) { s.Files = []string{"a.txt"} }},
 		{name: "context", steer: deliver, edit: func(s *faden.Submission) { s.Context = "rules" }},
 	}

@@ -177,6 +177,9 @@ type Submission struct {
 	Files   []string
 	Backend string
 	Model   string
+	// Effort is the backend's reasoning level, such as "high". faden does not
+	// check it: the levels differ per backend. Empty means the default.
+	Effort string
 	// Steer asks to put Input into the session's running turn, if it can take
 	// it, instead of queuing a turn. See Runner.Submit.
 	Steer bool
@@ -332,8 +335,8 @@ func (r *Runner) adopt(session string) (bool, error) {
 // process runs the turn.
 //
 // With s.Steer, the input joins the session's running turn when this runner
-// runs it on a backend that takes input during a turn, with the same backend
-// and model, and s has no Context or Files. Submit then returns a turn with
+// runs it on a backend that takes input during a turn, with the same backend,
+// model and effort, and s has no Context or Files. Submit then returns a turn with
 // status Joined; its Progress.Joined names the turn that answers it. In every
 // other case s is queued as usual.
 func (r *Runner) Submit(ctx context.Context, s Submission) (Turn, error) {
@@ -350,6 +353,7 @@ func (r *Runner) Submit(ctx context.Context, s Submission) (Turn, error) {
 		Files:     slices.Clone(s.Files),
 		Backend:   s.Backend,
 		Model:     s.Model,
+		Effort:    s.Effort,
 	})
 	if err != nil {
 		return Turn{}, fmt.Errorf("faden: submit %s: %w", s.RequestID, err)

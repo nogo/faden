@@ -69,9 +69,12 @@ type Turn struct {
 	Context string `json:"context,omitempty"`
 	// Files are paths relative to the attempt's Setup.Dir. Only the paths are
 	// stored; a backend reads the bytes when it sends the turn.
-	Files   []string  `json:"files,omitempty"`
-	Backend string    `json:"backend"`
-	Model   string    `json:"model,omitempty"`
+	Files   []string `json:"files,omitempty"`
+	Backend string   `json:"backend"`
+	Model   string   `json:"model,omitempty"`
+	// Effort is the backend's reasoning level, passed through unchecked.
+	// Empty means the backend's default.
+	Effort  string    `json:"effort,omitempty"`
 	Created time.Time `json:"created"`
 	Progress
 }

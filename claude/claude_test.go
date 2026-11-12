@@ -78,7 +78,7 @@ func TestTurns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := faden.Turn{Session: "s", RequestID: "r1", Input: "Read greeting.txt"}
+	first := faden.Turn{Session: "s", RequestID: "r1", Input: "Read greeting.txt", Effort: "high"}
 	if err := b.Run(t.Context(), first, newAttempt(t, store, first)); err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestTurns(t *testing.T) {
 		t.Fatal(err)
 	}
 	args, _ := os.ReadFile(filepath.Join(dir, "args"))
-	if !strings.Contains(string(args), "--session-id\n"+c.SessionID) || strings.Contains(string(args), "environment-only") {
+	if !strings.Contains(string(args), "--session-id\n"+c.SessionID) || !strings.Contains(string(args), "\n--effort\nhigh\n") || strings.Contains(string(args), "environment-only") {
 		t.Fatalf("args: %s", args)
 	}
 	// The runner stores the user message; the backend stores only what Claude says and does.
@@ -113,7 +113,7 @@ func TestTurns(t *testing.T) {
 	}
 	args, _ = os.ReadFile(filepath.Join(dir, "args"))
 	input, _ := os.ReadFile(filepath.Join(dir, "input"))
-	if !strings.Contains(string(args), "--resume\n"+c.SessionID) || !strings.Contains(string(input), "Continue where you left off.") {
+	if !strings.Contains(string(args), "--resume\n"+c.SessionID) || strings.Contains(string(args), "--effort") || !strings.Contains(string(input), "Continue where you left off.") {
 		t.Fatalf("resume: %s %s", args, input)
 	}
 }

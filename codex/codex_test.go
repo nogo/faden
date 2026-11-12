@@ -121,7 +121,7 @@ func newBackend(t *testing.T, dir string, args ...string) (*Backend, *checkpoint
 func TestTurnThenResumeWithoutPrompt(t *testing.T) {
 	dir := setup(t, turnLines)
 	b, store := newBackend(t, dir, "-c", `sandbox_mode="read-only"`)
-	first := faden.Turn{Session: "s", RequestID: "r1", Input: "Read greeting.txt", Model: "invented-model"}
+	first := faden.Turn{Session: "s", RequestID: "r1", Input: "Read greeting.txt", Model: "invented-model", Effort: "high"}
 	if err := b.Run(t.Context(), first, newAttempt(t, store, first)); err != nil {
 		t.Fatal(err)
 	}
@@ -161,6 +161,9 @@ func TestTurnThenResumeWithoutPrompt(t *testing.T) {
 			t.Fatalf("missing %s in:\n%s", need, got)
 		}
 	}
+	if effort := turnStartEffort(t, dir); effort != "high" {
+		t.Fatalf("turn/start effort = %q, want high", effort)
+	}
 
 	os.Remove(filepath.Join(dir, "got"))
 	second := faden.Turn{Session: "s", RequestID: "r2"}
@@ -171,7 +174,7 @@ func TestTurnThenResumeWithoutPrompt(t *testing.T) {
 		t.Fatalf("methods: %v", gotMethods(t, dir))
 	}
 	got, _ = os.ReadFile(filepath.Join(dir, "got"))
-	if !strings.Contains(string(got), `"threadId":"thr_invented"`) || !strings.Contains(string(got), `"input":[]`) {
+	if !strings.Contains(string(got), `"threadId":"thr_invented"`) || !strings.Contains(string(got), `"input":[]`) || strings.Contains(string(got), `"effort"`) {
 		t.Fatalf("resume lines:\n%s", got)
 	}
 	if b.ContinuesWithoutPrompt() {
@@ -613,4 +616,21 @@ func TestTooLongLineFailsTheTurn(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "too long") {
 		t.Fatalf("err = %v, want a too-long line", err)
 	}
+}
+
+// turnStartEffort returns the effort the fake codex received in turn/start.
+func turnStartEffort(t *testing.T, dir string) string {
+	t.Helper()
+	data, _ := os.ReadFile(filepath.Join(dir, "got"))
+	for line := range strings.SplitSeq(string(data), "\n") {
+		var req struct {
+			Method string
+			Params struct{ Effort string }
+		}
+		if json.Unmarshal([]byte(line), &req) == nil && req.Method == "turn/start" {
+			return req.Params.Effort
+		}
+	}
+	t.Fatal("no turn/start request")
+	return ""
 }

@@ -35,7 +35,7 @@ func (r *Runner) steer(ctx context.Context, s Submission) (Turn, bool, error) {
 	if err != nil {
 		return Turn{}, true, fmt.Errorf("faden: submit %s: %w", s.RequestID, err)
 	}
-	if !ok || running.Backend != s.Backend || running.Model != s.Model {
+	if !ok || running.Backend != s.Backend || running.Model != s.Model || running.Effort != s.Effort {
 		return Turn{}, false, nil
 	}
 	b, ok := r.backends[running.Backend].(steeringBackend)
@@ -101,6 +101,7 @@ func (r *Runner) join(ctx context.Context, s Submission, running string) (Turn, 
 		Input:     s.Input,
 		Backend:   s.Backend,
 		Model:     s.Model,
+		Effort:    s.Effort,
 	})
 	if err != nil {
 		return Turn{}, err

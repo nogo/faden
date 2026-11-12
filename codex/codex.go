@@ -436,7 +436,11 @@ func (x *exchange) answer(m message) error {
 		if err := x.a.SaveCursor(x.ctx, data); err != nil {
 			return fmt.Errorf("checkpoint: %w", err)
 		}
-		return x.conn.request(idTurn, "turn/start", map[string]any{"threadId": x.cursor.ThreadID, "input": x.items})
+		params := map[string]any{"threadId": x.cursor.ThreadID, "input": x.items}
+		if x.t.Effort != "" {
+			params["effort"] = x.t.Effort
+		}
+		return x.conn.request(idTurn, "turn/start", params)
 	}
 	return nil
 }

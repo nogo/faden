@@ -181,7 +181,7 @@ Rejected: one constructor for all backends (`faden.New("claude", cfg)`), which n
 - `faden.Command.Dir` is new. `Local` and `container` use it before their own `Dir`.
 - A `Prepare` error fails the turn, as a backend error does. The failed attempt is not retried.
 - `Setup` is never stored: `Env` may carry a credential.
-- Effort and model flags come from the host's own record of the turn, through `Args`. `Turn` gets no new field.
+- ~~Effort and model flags come from the host's own record of the turn, through `Args`. `Turn` gets no new field.~~ *Changed 2026-11-12: a continued turn must keep its effort, and `Turn` already carried the model. See "Decided 2026-11-12 — effort".*
 
 Rejected: one hook per backend config, which wires the same thing in three places; values in the context, which hide a required input from the signature.
 
@@ -375,3 +375,15 @@ Rejected: keep stdin open and end at the result that answers the last message. N
 **The runner stores the event, then the joined record.** A crash between the two writes leaves a message delivered twice at worst, never lost.
 
 Rejected: a new `Runner.Send` beside `Submit`. One entry point with an option was enough, and `Submit` already carries the retry key.
+
+## Decided 2026-11-12 — effort
+
+**`Submission.Effort` and `Turn.Effort` hold the backend's reasoning level, beside `Model`.** The submission fixes it, and every store keeps it with the turn. sidenote lets its user pick an effort per message (nogo/sidenote#105). A turn that continues after a restart must run with the same effort, so the host cannot pass it again on each attempt.
+
+- **faden passes the string through unchecked.** The levels differ per backend: Claude takes `max`, Codex does not. The host keeps the lists and checks a level before it submits. Empty means the backend's default.
+- **Claude** gets `--effort <level>`. **Codex** gets `effort` in the `turn/start` params. **llama** ignores it.
+- **Steering joins only a running turn with the same effort,** as with the model. Otherwise the input is queued as its own turn.
+- Checked against the installed binaries, not a live turn: `claude --help` (2.1.322) lists `--effort <level>` with low, medium, high, xhigh, max. The schema from `codex app-server generate-json-schema` (0.167.1) has an optional `effort` in `TurnStartParams`, a non-empty string, described as "Override the reasoning effort for this turn and subsequent turns."
+- Open: Codex says the effort holds for later turns too. Whether a later turn without an effort, on a resumed thread, keeps the earlier level is not measured.
+
+Rejected: an opaque `Turn.Meta` for host data. It had no user beside effort, and a typed field shows each backend what to send.

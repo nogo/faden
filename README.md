@@ -153,6 +153,7 @@ agent, err := claude.New(claude.Config{
 
 The store goes in once, to `faden.Open`; a backend reaches it only through the `faden.Attempt` the runner passes to each run. A backend's name is its key in that map.
 A submission names its backend. Submitting the next turn of a session with another backend is a handover.
+It may also name a `Model` and an `Effort` (the reasoning level, such as `high`). The turn stores both, so a continuation runs with them. Empty means the backend's default, and faden does not check either value.
 
 ## What the host owns
 

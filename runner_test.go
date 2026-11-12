@@ -876,3 +876,49 @@ func TestCancelDuringAdoptionStaysCancelled(t *testing.T) {
 		t.Fatalf("backend ran %s first, want only r2", id)
 	}
 }
+
+func TestKnownRequestIDKeepsTheFirstEffort(t *testing.T) {
+	store := openStore(t, t.TempDir())
+	b := &fake{run: func(context.Context, faden.Turn, *faden.Attempt) error { return nil }}
+	r, _ := faden.Open(store, map[string]faden.Backend{"fake": b})
+	defer r.Close()
+	first := sub("s1", "r1", "first")
+	first.Effort = "high"
+	r.Submit(t.Context(), first)
+	wait(t, r, "r1")
+	again := sub("s1", "r1", "first")
+	again.Effort = "low"
+	got, err := r.Submit(t.Context(), again)
+	if err != nil || got.Effort != "high" {
+		t.Fatalf("resubmitted turn = %+v, %v", got, err)
+	}
+}
+
+// A turn killed while it ran continues with the effort it was submitted with.
+func TestContinuationKeepsTheEffort(t *testing.T) {
+	dir := t.TempDir()
+	s := openStore(t, dir)
+	if _, err := s.SubmitTurn(t.Context(), faden.Turn{RequestID: "r1", Session: "s1", Input: "original", Backend: "fake", Effort: "high"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveTurn(t.Context(), faden.Turn{RequestID: "r1", Status: faden.Running, Attempts: 1}); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	store := openStore(t, dir)
+	var sent faden.Turn
+	b := &fake{run: func(_ context.Context, turn faden.Turn, _ *faden.Attempt) error {
+		sent = turn
+		return nil
+	}}
+	r, err := faden.Open(store, map[string]faden.Backend{"fake": b})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	got := wait(t, r, "r1")
+	if got.Attempts != 2 || sent.Input != "Continue where you left off." || sent.Effort != "high" {
+		t.Fatalf("turn = %+v, sent %+v", got, sent)
+	}
+}
