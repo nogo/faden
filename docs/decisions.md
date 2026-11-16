@@ -10,9 +10,9 @@ T3 Code's [quota investigation](https://github.com/pingdotgg/t3code/issues/24649
 
 ### Name and scope
 
-- **The module is `github.com/nogo/faden`.** "Durable" named one property; the module is a thread that survives restarts and model switches. `github.com/nogo/durable` stays with the proactive gate (`../produrable`).
+- **The module is `github.com/nogo/faden`.** "Durable" named one property; the module is a thread that survives restarts and model switches. `github.com/nogo/durable` stays with another project.
 - **Durability is per turn.** A turn is one user input and everything until the backend's final answer. pi durable checkpoints every step because it owns the loop; Claude Code and Codex own theirs, so a turn is the finest unit all backends share. Rejected: pi's task tree, phases, documents and forks.
-- **Sources read for the design:** pi durable (`earendil-works/pi`, `packages/durable`, and the post at earendil.com/posts/pi-durable), t3code (`pingdotgg/t3code`: `apps/server/src/serverRuntimeStartup.ts`, `provider/Layers/ClaudeAdapter.ts`, `docs/internals/context-handoffs.md`, `docs/user/portable-handoffs.md`), and the existing code in `invest/internal/analyst`, `sidenote/internal/harness` and `forge/internal/{harness,container}`.
+- **Sources read for the design:** pi durable (`earendil-works/pi`, `packages/durable`, and the post at earendil.com/posts/pi-durable), t3code (`pingdotgg/t3code`: `apps/server/src/serverRuntimeStartup.ts`, `provider/Layers/ClaudeAdapter.ts`, `docs/internals/context-handoffs.md`, `docs/user/portable-handoffs.md`), and the existing agent code in three host apps: an analysis host, a chat host and a container host.
 
 ### Model
 
@@ -21,7 +21,7 @@ T3 Code's [quota investigation](https://github.com/pingdotgg/t3code/issues/24649
 - ~~**A turn** carries a session, a `requestId`, the input text, the backend and model, a status (`pending`, `running`, `done`, `failed`, `cancelled`) and an attempt count. Done, failed and cancelled are final. A session runs one turn at a time; later turns wait as `pending`, oldest first.~~ *Changed 2026-11-06: a steered submission that joins a running turn needs a final record, so a retry finds it (#41).*
 - **A turn** carries a session, a `requestId`, the input text, the backend and model, a status (`pending`, `running`, `done`, `failed`, `cancelled`, `joined`) and an attempt count. Done, failed, cancelled and joined are final. A joined turn never runs: `Progress.Joined` names the running turn its input went into. A session runs one turn at a time; later turns wait as `pending`, oldest first.
 - **`requestId` is unique per store.** Submitting a known `requestId` returns the existing turn and runs nothing.
-- **An event is one completed item** of a turn: user message, assistant message, tool call, tool result, error, handover, turn started, turn ended. ~~It keeps the backend's native payload beside the normalized fields (text, tool name, action, input, output), as sidenote's `harness.Event` does.~~ *Changed 2026-11-02: only llama.cpp keeps a native payload; Claude Code and Codex events carry the normalized fields (text, tool name, action, input, output). See "Decided 2026-11-02 — memory".* Streaming fragments are not stored.
+- **An event is one completed item** of a turn: user message, assistant message, tool call, tool result, error, handover, turn started, turn ended. ~~It keeps the backend's native payload beside the normalized fields (text, tool name, action, input, output), as the chat host's event type does.~~ *Changed 2026-11-02: only llama.cpp keeps a native payload; Claude Code and Codex events carry the normalized fields (text, tool name, action, input, output). See "Decided 2026-11-02 — memory".* Streaming fragments are not stored.
 - **A resume cursor is opaque JSON owned by its backend.** faden stores it and hands it back; only the backend reads it (as t3code does).
 
 ### Restart
@@ -35,11 +35,11 @@ T3 Code's [quota investigation](https://github.com/pingdotgg/t3code/issues/24649
 ### Backends
 
 - ~~**A backend runs one turn:** it gets the turn, the resume cursor and an emit function, and returns the new cursor. faden stores what it emits.~~ *Changed 2026-11-02: it gets the turn and a `faden.Attempt`. See "Decided 2026-11-02 — the attempt".*
-- **Claude Code:** faden creates the session UUID and passes `--session-id` on the first turn and `--resume` on later ones, so the id is stored before the process starts. `--print` with stream-json input and output; one process per turn (as sidenote does). The cursor also keeps the last assistant message id. The host supplies the permission flags.
-- **llama.cpp:** faden's own loop against an OpenAI-compatible `/v1/chat/completions`, ported from invest's analyst. Each model answer is stored; a tool call is stored before it runs and its result after. On continue, the messages are rebuilt from the events. A stored call without a result runs again only if its tool is marked safe; otherwise its result says it was interrupted.
+- **Claude Code:** faden creates the session UUID and passes `--session-id` on the first turn and `--resume` on later ones, so the id is stored before the process starts. `--print` with stream-json input and output; one process per turn (as the chat host does). The cursor also keeps the last assistant message id. The host supplies the permission flags.
+- **llama.cpp:** faden's own loop against an OpenAI-compatible `/v1/chat/completions`, ported from the analysis host. Each model answer is stored; a tool call is stored before it runs and its result after. On continue, the messages are rebuilt from the events. A stored call without a result runs again only if its tool is marked safe; otherwise its result says it was interrupted.
 - **llama.cpp tools** are the host's Go functions plus `bash` (run through the runtime, never safe to replay) and `read_thread`.
 - **`faden.Runtime` runs one command to its end** and returns output and exit code; a non-zero exit is a result, not an error. `faden.Local` runs it through `os/exec` in a directory and kills the process group when stopped.
-- ~~**llama.cpp stores the user message itself** on the first attempt. A continuation that finds no stored user message for its turn fails with "send a new turn", because the runner no longer holds the input then.~~ *Changed 2026-11-02: a crash before that event failed a turn whose input was in the store (forge review of #1).*
+- ~~**llama.cpp stores the user message itself** on the first attempt. A continuation that finds no stored user message for its turn fails with "send a new turn", because the runner no longer holds the input then.~~ *Changed 2026-11-02: a crash before that event failed a turn whose input was in the store (container host review of #1).*
 - **The runner stores each turn's user message,** once, after any handover event and before the backend runs. A backend stores only what its agent says and does. The input is in the store from `Submit` on, so no crash can lose it, and a continuation prompt never enters the thread as something the user said.
 - ~~**Codex is parked** until Claude and llama.cpp work.~~ *Superseded 2026-11-02: the `codex` backend exists, see "Decided 2026-11-02 — Codex".*
 
@@ -53,9 +53,9 @@ T3 Code's [quota investigation](https://github.com/pingdotgg/t3code/issues/24649
 - **`Store` is an interface in the root package.** faden ships `jsonl` and `sqlite`, and one conformance suite (`storetest`) that every store passes.
 - ~~**`jsonl`:** one append-only file per session in a directory, synced before a write returns. A torn last line is cut at open. A lock file (`flock`) makes one process the owner; a second gets `ErrLocked` at once.~~ *Changed 2026-11-05: the lock is per session, see "Decided 2026-11-05 — one owner per session" (#20).*
 - **`jsonl`:** one append-only file per session in a directory, synced before a write returns. A torn last line is cut when a process claims the session or appends to it.
-- **`sqlite`:** takes the host's `*sql.DB`, so faden imports no driver. Tables carry a prefix (default `faden_`) so a host database can hold them. A host can bind the store to its own `*sql.Tx`, so a submission commits with the host's own write (invest stores a question with its book).
+- **`sqlite`:** takes the host's `*sql.DB`, so faden imports no driver. Tables carry a prefix (default `faden_`) so a host database can hold them. A host can bind the store to its own `*sql.Tx`, so a submission commits with the host's own write (the analysis host stores a question with its own data).
 - **`golang.org/x/sys` is a dependency of `Local` on macOS only.** It reads a process's start time; see "Restart" under "Decided 2026-11-01". It was already in the module graph through the test driver.
-- **`modernc.org/sqlite` is a test dependency of `sqlite` only.** The conformance suite needs a real driver; invest already uses this one (pure Go, no cgo). No non-test file imports it.
+- **`modernc.org/sqlite` is a test dependency of `sqlite` only.** The conformance suite needs a real driver; the analysis host already uses this one (pure Go, no cgo). No non-test file imports it.
 
 ### Handover
 
@@ -72,7 +72,7 @@ T3 Code's [quota investigation](https://github.com/pingdotgg/t3code/issues/24649
 
 ## Open
 
-- **Thread reading from a container:** loopback on the host is not reachable from a container without host networking, which forge's boundary forbids. Candidates: a unix socket mounted into the container, or no `read_thread` for container runs.
+- **Thread reading from a container:** loopback on the host is not reachable from a container without host networking, which the container host's boundary forbids. Candidates: a unix socket mounted into the container, or no `read_thread` for container runs.
 - ~~**Codex without a prompt:** read how t3code's Codex adapter continues a turn.~~ *Answered 2026-11-02: `turn/start` with no input items after `thread/resume` (t3code `CodexSessionRuntime.ts`, capability `promptlessTurnContinuation`).*
 
 ## Measured 2026-11-02 — Claude resume after a kill
@@ -105,7 +105,7 @@ Codex continues without a prompt: after `thread/resume`, `turn/start` carries an
 
 Stdin is an `os.Pipe`, not an `io.Pipe`: a pipe the child reads directly leaves no copying goroutine that could keep the runtime waiting after a crashed Codex.
 
-The protocol shapes come from sidenote's adapter and t3code as described in the issue; neither source nor a `codex` binary was available when this was written, so the fake in `codex/codex_test.go` uses invented lines in the shapes remembered from the app-server schema. Check them against a real run.
+The protocol shapes come from the chat host's adapter and t3code as described in the issue; neither source nor a `codex` binary was available when this was written, so the fake in `codex/codex_test.go` uses invented lines in the shapes remembered from the app-server schema. Check them against a real run.
 
 ### Measured — Codex resume after a kill
 
@@ -116,7 +116,7 @@ The protocol shapes come from sidenote's adapter and t3code as described in the 
 
 This supersedes the earlier Restart rule that assigns `Local.PIDDir/process.pid` to one sequential owner. It also supersedes the parent-death signal as a recovery aid. ~~Backends call `Stop(ctx, t.RequestID)` before continuing an attempt above one, including turns that run no command.~~ *Changed 2026-11-02 (b14c8e6, 6a5d6ad): `Backend` has `Stop(ctx, turn)`, and the runner calls it before an attempt above one and when `Open` gives a turn up after three attempts; a backend forwards to its runtime.* Each key has one command owner at a time. Hosts that share a record directory across stores must give those stores distinct request IDs.
 
-~~A record contains the process group leader's PID and its Linux start time from `/proc/<pid>/stat`.~~ *Changed 2026-11-12: faden runs on Linux and macOS, and sidenote runs `Local` on a Mac.* A record contains the process group leader's PID and its start time: field 22 of `/proc/<pid>/stat` on Linux, `p_starttime` from `sysctl kern.proc.pid` on macOS. The standard library has no start time; `golang.org/x/sys/unix` (`SysctlKinfoProc`) gives it on macOS. Rejected: `ps -o lstart=`, which forks once per command and counts whole seconds. Recovery kills the group only when that identity still matches. Missing, malformed, and stale records are discarded. Local leaves the leader alive after host death so recovery can still verify it. Cancellation and normal completion kill the local group.
+~~A record contains the process group leader's PID and its Linux start time from `/proc/<pid>/stat`.~~ *Changed 2026-11-12: faden runs on Linux and macOS, and the chat host runs `Local` on a Mac.* A record contains the process group leader's PID and its start time: field 22 of `/proc/<pid>/stat` on Linux, `p_starttime` from `sysctl kern.proc.pid` on macOS. The standard library has no start time; `golang.org/x/sys/unix` (`SysctlKinfoProc`) gives it on macOS. Rejected: `ps -o lstart=`, which forks once per command and counts whole seconds. Recovery kills the group only when that identity still matches. Missing, malformed, and stale records are discarded. Local leaves the leader alive after host death so recovery can still verify it. Cancellation and normal completion kill the local group.
 
 ### Runtimes
 
@@ -172,19 +172,19 @@ Rejected: one constructor for all backends (`faden.New("claude", cfg)`), which n
 
 ## Decided 2026-11-02 — release
 
-- **`go 1.27` in `go.mod`, not a patch version.** The `go` line is a minimum for every host that embeds faden; `go 1.27.3` would force sidenote (on 1.27.1) to upgrade. `mise.toml` still pins the toolchain faden is checked with.
+- **`go 1.27` in `go.mod`, not a patch version.** The `go` line is a minimum for every host that embeds faden; `go 1.27.3` would force a host on 1.27.1 to upgrade. `mise.toml` still pins the toolchain faden is checked with.
 - **MIT license.** The shortest common license that pkg.go.dev recognizes. Rejected: Apache-2.0, whose patent grant and NOTICE rules weigh more than a personal library needs; BSD-3, whose extra clause adds nothing here.
-- ~~**CI runs `mise run check`,** the local gate, on Linux. Actions are pinned by commit SHA.~~ *Changed 2026-11-12: sidenote runs `Local` on macOS, and a Linux-only `/proc` read shipped unnoticed.*
+- ~~**CI runs `mise run check`,** the local gate, on Linux. Actions are pinned by commit SHA.~~ *Changed 2026-11-12: the chat host runs `Local` on macOS, and a Linux-only `/proc` read shipped unnoticed.*
 - **CI runs `mise run check`,** the local gate, on Linux and macOS. Actions are pinned by commit SHA.
 
 ## Decided 2026-11-02 — prepare each attempt (#21)
 
-**The host sets up every attempt through one hook: `faden.Options.Prepare func(ctx, faden.Turn) (faden.Setup, error)`.** One runner then serves sessions that each have their own workspace, rules and tools (sidenote's views, invest's dated prompt, forge's coding prompt).
+**The host sets up every attempt through one hook: `faden.Options.Prepare func(ctx, faden.Turn) (faden.Setup, error)`.** One runner then serves sessions that each have their own workspace, rules and tools (the chat host's views, the analysis host's dated prompt, the container host's coding prompt).
 
 - The runner calls `Prepare` before every attempt, a continuation included. `t.Attempts` is 1 for a first attempt and above 1 for a continuation, so a host can keep the workspace a killed attempt left. The backend reads the result through `Attempt.Setup()`. A runner without a hook gives the zero `Setup`.
 - `Setup{Dir, Args, Env, System}`:
-  - Claude: `Dir` is the command's directory, `Args` follow the backend's own, `Env` joins the command's, `System` is `--append-system-prompt`. Claude ignores a new system prompt on a resumed session (sidenote, checked with haiku), so `System` reaches it on a session's first attempt only. A host that changes rules mid-session puts the change in the prompt.
-  - Codex: `Dir` is `cwd` and `System` is `developerInstructions`, on `thread/start` and `thread/resume`. `Args` follow the backend's own and `Env` joins the command's. The two thread parameters are unverified against a live Codex here; sidenote verified them.
+  - Claude: `Dir` is the command's directory, `Args` follow the backend's own, `Env` joins the command's, `System` is `--append-system-prompt`. Claude ignores a new system prompt on a resumed session (checked by the chat host with haiku), so `System` reaches it on a session's first attempt only. A host that changes rules mid-session puts the change in the prompt.
+  - Codex: `Dir` is `cwd` and `System` is `developerInstructions`, on `thread/start` and `thread/resume`. `Args` follow the backend's own and `Env` joins the command's. The two thread parameters are unverified against a live Codex here; the chat host verified them.
   - llama: `System` is the first system message of each request. It is not an event, so the stored transcript never holds it. `Dir` and `Env` go to `bash`. `Args` has no meaning and is ignored.
 - `faden.Command.Dir` is new. `Local` and `container` use it before their own `Dir`.
 - A `Prepare` error fails the turn, as a backend error does. The failed attempt is not retried.
@@ -221,7 +221,7 @@ Rejected: cutting inside each tool, which leaves host tools uncut; a limit in to
 
 ## Decided 2026-11-02 — llama file tools (#25)
 
-**`llama.Config.FileTools` adds `read`, `write` and `edit`.** forge drops pi, so local models need to read, write and edit files where `bash` runs.
+**`llama.Config.FileTools` adds `read`, `write` and `edit`.** The container host drops pi, so local models need to read, write and edit files where `bash` runs.
 
 - They run through `faden.Runtime` with `sh`, so a container host edits files in the container. Paths are relative to `Setup.Dir`. The runtime needs `readlink`, `head`, `tail`, `tr`, `wc` and `mkdir`.
 - A path is cleaned in Go, so `..` cannot hide behind a missing directory. The script then resolves symlinks of the deepest existing ancestor and rejects a path that leaves `Dir`. `..`, an absolute path and a symlink are all rejected.
@@ -246,9 +246,9 @@ Rejected: usage on each event, which grows with tool activity; keeping native CL
 
 **`Turn.Failure` says why a turn failed: `""` (agent or other), `"quota"` or `"unavailable"`.** `Turn.RetryAt` and `Turn.LimitType` hold the reset time and limit name of a quota stop, when the backend knew them. A backend returns `*faden.QuotaError` or `*faden.UnavailableError`, wrapped or not. The runner finds it with `errors.As` and stores the kind with the failed turn. `Turn.Error` keeps the text.
 
-**The host decides when to send a new turn.** The runner never waits for a reset. The host owns the schedule, and forge already has its breaker.
+**The host decides when to send a new turn.** The runner never waits for a reset. The host owns the schedule, and the container host already has its breaker.
 
-- **Claude:** a result with `error: "rate_limit"`, or `quotaLimits.status: "rejected"`, is quota. `resetsAt` (Unix seconds) and `rateLimitType` fill `RetryAt` and `LimitType`. `error: "authentication_failed"` or a "Not logged in" result is unavailable. Checked live with `--output-format stream-json`: the logged-out CLI puts `error` on the assistant line before the result, so the backend keeps it until the result arrives. The quota shapes come from forge's parser and are tested with invented lines. They were not triggered live.
+- **Claude:** a result with `error: "rate_limit"`, or `quotaLimits.status: "rejected"`, is quota. `resetsAt` (Unix seconds) and `rateLimitType` fill `RetryAt` and `LimitType`. `error: "authentication_failed"` or a "Not logged in" result is unavailable. Checked live with `--output-format stream-json`: the logged-out CLI puts `error` on the assistant line before the result, so the backend keeps it until the result arrives. The quota shapes come from the container host's parser and are tested with invented lines. They were not triggered live.
 - **Codex:** a failed turn with `codexErrorInfo: "usageLimitExceeded"` is quota. The reset is `primary.resets_at` (`codex exec --json`) or `primary.resetsAt` (camel case), read from the last notification that carries a rate-limit snapshot. The `app-server` names of both are unverified, because `codex` is not installed here. Codex has no unavailable kind yet.
 - **llama:** a 429 after the retries is quota. `RetryAt` is the time of the last answer plus its `Retry-After`, and zero when none was sent. A refused connection after the retries is unavailable.
 
@@ -386,7 +386,7 @@ Rejected: a new `Runner.Send` beside `Submit`. One entry point with an option wa
 
 ## Decided 2026-11-12 — effort
 
-**`Submission.Effort` and `Turn.Effort` hold the backend's reasoning level, beside `Model`.** The submission fixes it, and every store keeps it with the turn. sidenote lets its user pick an effort per message (nogo/sidenote#105). A turn that continues after a restart must run with the same effort, so the host cannot pass it again on each attempt.
+**`Submission.Effort` and `Turn.Effort` hold the backend's reasoning level, beside `Model`.** The submission fixes it, and every store keeps it with the turn. The chat host lets its user pick an effort per message. A turn that continues after a restart must run with the same effort, so the host cannot pass it again on each attempt.
 
 - **faden passes the string through unchecked.** The levels differ per backend: Claude takes `max`, Codex does not. The host keeps the lists and checks a level before it submits. Empty means the backend's default.
 - **Claude** gets `--effort <level>`. **Codex** gets `effort` in the `turn/start` params. **llama** ignores it.

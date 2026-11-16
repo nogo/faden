@@ -1,6 +1,6 @@
 # faden — agent instructions
 
-A Go module that runs agent turns which survive a restart and can move between Claude Code, Codex and llama.cpp. Hosts (sidenote, forge, invest) embed it.
+A Go module that runs agent turns which survive a restart and can move between Claude Code, Codex, ACP agents and llama.cpp. Host apps embed it.
 It is a personal project.
 
 ## Read first
@@ -12,7 +12,7 @@ It is a personal project.
 ## Stack
 
 - **Go**, standard library only. The SQLite driver is the host's. Every other dependency needs a line in `docs/decisions.md` first.
-- `mise run check` (vet, gofmt, tidy, `go test -race`); `mise run test` is forge's acceptance gate.
+- `mise run check` (vet, gofmt, tidy, `go test -race`); `mise run test` is a host's acceptance gate.
 
 ## Rules
 
