@@ -47,7 +47,7 @@ func TestOpenRefusesPathOutsideDirAndMissingFile(t *testing.T) {
 }
 
 func TestOpenSymlinks(t *testing.T) {
-	parent := t.TempDir()
+	parent := realTempDir(t)
 	dir := filepath.Join(parent, "work")
 	if err := os.Mkdir(dir, 0700); err != nil {
 		t.Fatal(err)
@@ -90,4 +90,14 @@ func TestOpenSymlinks(t *testing.T) {
 			}
 		})
 	}
+}
+
+// realTempDir is t.TempDir with symlinks resolved, as Open resolves them:
+// on macOS the temp directory is under /var, a link to /private/var.
+func realTempDir(t *testing.T) string {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }

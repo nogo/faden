@@ -506,7 +506,11 @@ func TestCancelInterruptsBeforeRuntimeEnds(t *testing.T) {
 
 func TestFilesSendImageAsLocalImageAndTextFileAsPathLine(t *testing.T) {
 	dir := setup(t, turnLines)
-	work := t.TempDir()
+	// Resolved like the attached paths: on macOS /var links to /private/var.
+	work, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	png, _ := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==")
 	os.WriteFile(filepath.Join(work, "shot.png"), png, 0600)
 	os.WriteFile(filepath.Join(work, "notes.txt"), []byte("invented notes"), 0600)

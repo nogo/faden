@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -194,6 +195,9 @@ exec "$@"
 `
 
 func TestFileToolsThroughContainer(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the container scripts need Linux /proc and setsid; fakePodman runs them on the host")
+	}
 	bin := t.TempDir()
 	os.WriteFile(filepath.Join(bin, "podman"), []byte(fakePodman), 0o755)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))

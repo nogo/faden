@@ -1,7 +1,6 @@
 package llama_test
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -374,7 +373,7 @@ func TestCrashChildProcess(t *testing.T) {
 	if dir == "" {
 		t.Skip("helper for TestKilledBetweenBashCallAndResultDoesNotRunBashAgain")
 	}
-	_, srv := newReplay(t, "bash_call.json")
+	_, srv := newReplay(t, "bash_held_call.json")
 	store := openStore(t, dir)
 	b, _ := llama.New(llama.Config{URL: srv.URL + "/v1", Runtime: faden.Local{PIDDir: dir, Dir: dir}})
 	r, err := faden.Open(store, map[string]faden.Backend{"llama": b})
@@ -392,26 +391,23 @@ func TestKilledBetweenBashCallAndResultDoesNotRunBashAgain(t *testing.T) {
 	runs := filepath.Join(t.TempDir(), "runs")
 	cmd := exec.Command(os.Args[0], "-test.run=^TestCrashChildProcess$")
 	cmd.Env = append(os.Environ(), crashDirEnv+"="+dir, runsEnv+"="+runs)
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	out, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	line, err := bufio.NewReader(out).ReadString('\n')
-	if err != nil || line != "ready\n" {
-		cmd.Process.Kill()
-		cmd.Wait()
-		t.Fatalf("child output %q, err %v", line, err)
+	// The held bash call records its run, then waits for runs+".done".
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if ran, _ := os.ReadFile(runs); string(ran) == "ran\n" {
+			break
+		}
+		if time.Now().After(deadline) {
+			cmd.Process.Kill()
+			cmd.Wait()
+			t.Fatal("child never ran bash")
+		}
 	}
 	cmd.Process.Kill()
 	cmd.Wait()
-	stdin.Close() // lets the orphaned bash exit
+	os.WriteFile(runs+".done", nil, 0o600) // lets the orphaned bash exit
 
 	store := openStore(t, dir)
 	events, _ := faden.CollectEvents(store.Events(t.Context(), "s1", 0))
