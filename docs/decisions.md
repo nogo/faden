@@ -1,5 +1,11 @@
 # Decisions
 
+## Decided 2026-11-16 — Claude client identifier trial
+
+**Claude commands set `CLAUDE_CODE_ENTRYPOINT=faden` in their process environment.** `Setup.Env` can override it. This replaces an inherited client identifier with the name of the module running the turn.
+
+T3 Code's [quota investigation](https://github.com/pingdotgg/t3code/issues/24649) reports faster five-hour quota use for Agent SDK and print-mode clients. Its [merged change](https://github.com/pingdotgg/t3code/pull/28410) sets `t3-code`, with users reporting interactive rates afterward. That does not establish a rate for `faden`; quota savings remain unverified. This is a reversible trial, without a new configuration field or a change to the stream protocol.
+
 ## Decided 2026-11-01 — the first version
 
 ### Name and scope

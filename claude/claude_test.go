@@ -376,20 +376,25 @@ func TestFailedToolResultIsMarked(t *testing.T) {
 	}
 }
 
-// A fake claude that records its directory, arguments and one variable.
-const recordingClaude = "#!/bin/sh\npwd > pwd\nprintf '%s\\n' \"$@\" > args\nprintf '%s' \"$HOST_VAR\" > var\nIFS= read -r line; printf '%s\\n' \"$line\" > input\ncat fixture\n"
+// A fake claude that records its directory, arguments and selected variables.
+const recordingClaude = "#!/bin/sh\npwd > pwd\nprintf '%s\\n' \"$@\" > args\nprintf '%s' \"$HOST_VAR\" > var\nprintf '%s' \"$CLAUDE_CODE_ENTRYPOINT\" > entrypoint\nIFS= read -r line; printf '%s\\n' \"$line\" > input\ncat fixture\n"
 
 func TestPrepareSetupReachesCommandAndSystemOnlyOnFirstAttempt(t *testing.T) {
 	dir, work := t.TempDir(), t.TempDir()
 	os.WriteFile(filepath.Join(dir, "claude"), []byte(recordingClaude), 0700)
 	os.WriteFile(filepath.Join(work, "fixture"), []byte(stream), 0600)
 	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	t.Setenv("CLAUDE_CODE_ENTRYPOINT", "sdk-cli")
 	store := openStore(t, filepath.Join(dir, "store"))
 	b, _ := New(Config{Runtime: faden.Local{PIDDir: dir, Dir: dir}, Args: []string{"--own"}})
 	var attempts []int
 	runner, err := faden.Open(store, map[string]faden.Backend{"claude": b}, faden.Options{Prepare: func(_ context.Context, turn faden.Turn) (faden.Setup, error) {
 		attempts = append(attempts, turn.Attempts)
-		return faden.Setup{Dir: work, Args: []string{"--effort", "high"}, Env: []string{"HOST_VAR=invented"}, System: "invented rules"}, nil
+		env := []string{"HOST_VAR=invented"}
+		if turn.RequestID == "r2" {
+			env = append(env, "CLAUDE_CODE_ENTRYPOINT=host-choice")
+		}
+		return faden.Setup{Dir: work, Args: []string{"--effort", "high"}, Env: env, System: "invented rules"}, nil
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -414,6 +419,9 @@ func TestPrepareSetupReachesCommandAndSystemOnlyOnFirstAttempt(t *testing.T) {
 	}
 
 	submit("r1")
+	if got := read("entrypoint"); got != "faden" {
+		t.Fatalf("entrypoint = %q, want faden", got)
+	}
 	wantDir, _ := filepath.EvalSymlinks(work)
 	args := read("args")
 	if strings.TrimSpace(read("pwd")) != wantDir || read("var") != "invented" ||
@@ -422,6 +430,9 @@ func TestPrepareSetupReachesCommandAndSystemOnlyOnFirstAttempt(t *testing.T) {
 	}
 
 	submit("r2") // the session has a cursor now: Claude resumes
+	if got := read("entrypoint"); got != "host-choice" {
+		t.Fatalf("entrypoint = %q, want host-choice", got)
+	}
 	args = read("args")
 	if strings.Contains(args, "--append-system-prompt") || !strings.HasSuffix(args, "--effort\nhigh\n") {
 		t.Fatalf("resumed args %q", args)

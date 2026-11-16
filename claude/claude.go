@@ -157,7 +157,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 	argv = append(argv, b.cfg.Args...)
 	setup := a.Setup()
 	runtime := b.cfg.Runtime
-	var env []string
+	env := []string{"CLAUDE_CODE_ENTRYPOINT=faden"}
 	if b.cfg.Threads != nil {
 		token, err := b.cfg.Threads.Grant(t.Session)
 		if err != nil {
@@ -177,7 +177,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 			return fmt.Errorf("claude: MCP config: %w", err)
 		}
 		argv = append(argv, "--mcp-config", file.Name())
-		env = []string{mcp.TokenEnv + "=" + token}
+		env = append(env, mcp.TokenEnv+"="+token)
 	}
 	// Claude ignores a new system prompt on a resumed session.
 	if setup.System != "" && !resume {
