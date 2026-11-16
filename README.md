@@ -19,27 +19,33 @@ Use faden when **an agent's work must not be lost to a crash, a deploy or a rebo
 
 What it costs you: the standard library only, a store (JSONL files or your SQLite database), and one runner per store.
 
+## Install
+
+```sh
+go get github.com/nogo/faden
+```
+
+It needs Go 1.27 or newer. The agents themselves (Claude Code, Codex, an ACP agent, llama-server) are installed and logged in by you.
+
 ## The idea in one picture
 
 ```
-            host app (sidenote, forge, invest, ...)
-                 |  Submit(session, requestId, input, backend)
-                 v
-   +---------------------------- faden.Runner ----------------------------+
-   |  one turn at a time per session, oldest first                        |
-   |  stores the user message, the handover, every event, the cursor      |
-   +---------+--------------------------+---------------------------+----+
-             |                          |                           |
-       claude backend             codex backend               llama backend
-       (Claude Code CLI)          (codex app-server)          (faden's own loop on
-             |                          |                      /v1/chat/completions)
-             +------------+-------------+                           |
-                          v                                         v
-                 runtime: Local process                       llama-server
-                          or container exec
-                          |
-                          v
-                   store: jsonl files, the host's SQLite (*sql.DB) or memory
+                          your app
+                             |  Submit(session, requestId, input, backend)
+                             v
+   +---------------------------- faden.Runner -----------------------------+
+   |  one turn at a time per session, oldest first                         |
+   |  stores the user message, the handover, every event, the cursor       |
+   +-------+------------------+------------------+-------------------+-----+
+           |                  |                  |                   |
+    claude backend      codex backend       acp backend        llama backend
+    (Claude Code CLI)   (codex app-server)  (any ACP agent)    (faden's own loop on
+           |                  |                  |              /v1/chat/completions)
+           +------------------+------------------+                   |
+                              v                                      v
+              runtime: Local process or container exec          llama-server
+
+   store: jsonl files, the host's SQLite (*sql.DB) or memory
 ```
 
 - A **session** is a thread. It remembers one resume cursor per backend.
@@ -141,6 +147,8 @@ turn, err := runner.Wait(ctx, "r1")
 
 The answer is in the session's events: `store.Events(ctx, "s1", 0)`.
 
+To follow a session live, `runner.Watch(ctx, "s1", 0)` replays the stored events and then sends each new one as it is stored. It also sends text and thinking fragments while the answer streams; fragments are best effort and never stored. Watch works in the process that runs the runner.
+
 To add Claude Code, give it a runtime with a durable directory for its process records:
 
 ```go
@@ -185,7 +193,7 @@ What faden does that none of these do in the documentation I read:
 - **Handover between agents within one session,** with a cursor per agent: a returning agent resumes its own native session and gets only what happened since.
 - **The host's own store and transaction.** faden is a library, not a service: sessions live in your SQLite file beside your data, and a submission can commit with your own write.
 
-What faden does not do (yet): streaming to a live view, approvals, sandboxes it starts itself, several machines on one store (several processes on one machine are fine).
+What faden does not do (yet): approvals routed to a person (Codex requests are declined, ACP requests can be allowed once by config), sandboxes it starts itself, several machines on one store (several processes on one machine are fine).
 
 ## Status
 
