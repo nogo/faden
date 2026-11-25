@@ -132,11 +132,11 @@ func TestItemOfExactlyTheLimitIsKeptWhole(t *testing.T) {
 func TestPromptWithoutCatchUpPutsContextBeforeInput(t *testing.T) {
 	turn := faden.Turn{Session: "s", RequestID: "r", Input: "do it"}
 	a := attempt(t, turn)
-	if got := handover.Prompt(turn, a); got != "do it" {
+	if got, err := handover.Prompt(t.Context(), turn, a); err != nil || got != "do it" {
 		t.Fatalf("prompt = %q", got)
 	}
 	turn.Context = "you are in /work"
-	if got := handover.Prompt(turn, a); got != "you are in /work\n\ndo it" {
+	if got, err := handover.Prompt(t.Context(), turn, a); err != nil || got != "you are in /work\n\ndo it" {
 		t.Fatalf("prompt = %q", got)
 	}
 }

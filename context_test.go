@@ -62,8 +62,14 @@ func TestContextDoesNotConsumeHandoverBudget(t *testing.T) {
 		}
 		without := turn
 		without.Context = ""
-		plain := handover.Prompt(without, a)
-		prompt := handover.Prompt(turn, a)
+		plain, err := handover.Prompt(ctx, without, a)
+		if err != nil {
+			return err
+		}
+		prompt, err := handover.Prompt(ctx, turn, a)
+		if err != nil {
+			return err
+		}
 		if !strings.Contains(plain, "Previous answer") {
 			t.Fatalf("missing answer: %q", plain)
 		}

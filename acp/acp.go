@@ -132,7 +132,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 		return fmt.Errorf("acp: working directory: %w", err)
 	}
 	x.cwd = cwd
-	prompt, err := promptText(t, a, setup.Dir)
+	prompt, err := promptText(ctx, t, a, setup.Dir)
 	if err != nil {
 		return err
 	}
@@ -228,7 +228,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 // promptText is the text of session/prompt: the catch-up, context and input,
 // then a path line for each file. Images go as path lines too, so an agent
 // without image support still sees them.
-func promptText(t faden.Turn, a *faden.Attempt, dir string) (string, error) {
+func promptText(ctx context.Context, t faden.Turn, a *faden.Attempt, dir string) (string, error) {
 	files, err := attach.Open(dir, t.Files)
 	if err != nil {
 		return "", fmt.Errorf("acp: %w", err)
@@ -238,7 +238,11 @@ func promptText(t faden.Turn, a *faden.Attempt, dir string) (string, error) {
 	for _, im := range files.Images {
 		paths = append(paths, im.Path)
 	}
-	return attach.WithLines(handover.Prompt(t, a), paths), nil
+	prompt, err := handover.Prompt(ctx, t, a)
+	if err != nil {
+		return "", fmt.Errorf("acp: %w", err)
+	}
+	return attach.WithLines(prompt, paths), nil
 }
 
 // track lets Stop cancel c while the attempt of requestID runs, and cancels

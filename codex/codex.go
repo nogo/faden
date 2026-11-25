@@ -141,7 +141,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 		}
 	}
 	setup := a.Setup()
-	items, err := turnInput(t, a, setup.Dir)
+	items, err := turnInput(ctx, t, a, setup.Dir)
 	if err != nil {
 		return err
 	}
@@ -234,7 +234,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 // turnInput is the input of turn/start: the prompt with a line for each file
 // that is not an image, then the images as local files. A continuation
 // without a prompt sends nothing: the thread already holds the files.
-func turnInput(t faden.Turn, a *faden.Attempt, dir string) ([]map[string]string, error) {
+func turnInput(ctx context.Context, t faden.Turn, a *faden.Attempt, dir string) ([]map[string]string, error) {
 	items := []map[string]string{}
 	if t.Input == "" && t.Context == "" {
 		return items, nil
@@ -244,7 +244,11 @@ func turnInput(t faden.Turn, a *faden.Attempt, dir string) ([]map[string]string,
 		return nil, fmt.Errorf("codex: %w", err)
 	}
 	defer files.Close()
-	items = append(items, map[string]string{"type": "text", "text": attach.WithLines(handover.Prompt(t, a), files.Others)})
+	prompt, err := handover.Prompt(ctx, t, a)
+	if err != nil {
+		return nil, fmt.Errorf("codex: %w", err)
+	}
+	items = append(items, map[string]string{"type": "text", "text": attach.WithLines(prompt, files.Others)})
 	for _, im := range files.Images {
 		items = append(items, map[string]string{"type": "localImage", "path": im.Abs})
 	}

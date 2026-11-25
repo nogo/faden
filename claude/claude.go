@@ -190,7 +190,11 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 		return fmt.Errorf("claude: %w", err)
 	}
 	defer files.Close()
-	prompt := attach.WithLines(handover.Prompt(t, a), files.Others)
+	prompt, err := handover.Prompt(ctx, t, a)
+	if err != nil {
+		return fmt.Errorf("claude: %w", err)
+	}
+	prompt = attach.WithLines(prompt, files.Others)
 	first, stop := userMessage(prompt, files.Images)
 	defer stop()
 	stdin, send, err := os.Pipe()

@@ -162,7 +162,7 @@ Rejected: an exit-code field, which Claude cannot fill; `[exit N]` appended to O
 - **`Backend.Run(ctx, t, a *faden.Attempt) error`.** The runner makes one `Attempt` per run, bound to the turn's session and backend. It offers `Emit`, `Cursor`, `SaveCursor`, `Events` and `CatchUp`, and is a backend's only way to the store. The `claude`, `codex` and `llama` packages declare no store type and no `Name`; a backend's name is its key in the runner's map.
 - **`Attempt` is a struct, not an interface.** faden owns it, so a later method breaks no backend (Go wiki, Code Review Comments, "Interfaces"; Go blog, "Keeping your modules compatible"). `faden.NewAttempt(ctx, store, turn)` builds one without a runner, for a backend's tests; it has no catch-up.
 - **A backend saves its cursor through `SaveCursor`; `Run` returns no cursor.** Claude and Codex already saved the same cursor during the run, so the returned one was a second path to the same write.
-- **`Turn.CatchUp` and `Turn.HandoverBudget` moved to `Attempt.CatchUp()`.** They were never stored but sat on the public `Turn`, so a host saw them empty after `Wait`. `handover.Prompt(t, a)` renders them; the root package cannot, because `handover` imports it.
+- **`Turn.CatchUp` and `Turn.HandoverBudget` moved to ~~`Attempt.CatchUp()`~~ `Attempt.CatchUp(ctx)`.** They were never stored but sat on the public `Turn`, so a host saw them empty after `Wait`. ~~`handover.Prompt(t, a)`~~ `handover.Prompt(ctx, t, a)` renders them; the root package cannot, because `handover` imports it. *Changed 2026-11-25: the catch-up is read from the store, see "Decided 2026-11-25 — memory over months".*
 - **`Session.Backend` is gone,** with the `Store` rule that wrote it on every submit. Nothing in faden read it: the handover boundary comes from executed turns. jsonl now writes a session record only when it creates the session; sqlite inserts the session row once. Old files and rows still load, because their extra field is ignored.
 - **`NewAttempt` fails for an unknown session** with `ErrNotFound`, so the mistake shows where it is made, not at the first `Emit`.
 
@@ -329,7 +329,7 @@ Rejected: a capped writer inside `bash` only, which left stderr unbounded; stder
 
 **`Store.Events` and `Attempt.Events` return `iter.Seq2[Event, error]`.** A store yields events one by one and holds no lock or connection between them, so a loop may call the store. jsonl copies the session's offsets under its lock and reads the file without it; sqlite reads pages of 64; memstore yields copies. An unknown session or a failed read is yielded as the error. `faden.CollectEvents` gathers the sequence for a reader that needs the whole range, as llama's transcript rebuild does. This breaks every `Store` implementer and every caller once.
 
-**The runner reads a session in one pass per turn and keeps little of it:** the last sequence number of each other turn, this turn's handover marker and user-message flag, and this turn's events only for a continuation prompt. Only a handover reads again, from its boundary on. Without a handover the runner looks up the backend of one turn, not of every turn.
+**The runner reads a session in one pass per turn and keeps little of it:** the last sequence number of each other turn, this turn's handover marker and user-message flag, ~~and this turn's events only for a continuation prompt~~ and the sequence number of this turn's first event *(changed 2026-11-25: the catch-up keeps no events, see "Decided 2026-11-25 — memory over months")*. Only a handover reads again, from its boundary on. Without a handover the runner looks up the backend of one turn, not of every turn.
 
 Measured with an idle backend on a jsonl session of 2,000 events of 8 KB (peak RSS, `VmHWM`, two runs each): 31–35 MB before, 16–17.5 MB after. `storetest` checks order across pages, a store call inside the loop (sqlite runs with one connection), and an early stop.
 
@@ -428,3 +428,10 @@ Rejected: replacing the `claude` and `codex` backends with their ACP adapters. O
 - Open: ACP puts the agent's stderr (up to 64 KiB) into the error when the agent exits early, and Codex and ACP copy JSON-RPC error messages. Both break the display-text rule.
 
 Rejected: one kind per provider error. Providers rename their errors, and each kind is a promise to every host.
+
+## Decided 2026-11-25 — memory over months
+
+A host runs faden for months. Memory may grow with the number of sessions, turns and events, as ids and offsets. It never grows with what they hold (input, context, tool output), and no OS resource is held per session that is not running. Reviewed with Codex; probes in an invented session.
+
+- **The catch-up is a range, not a list.** `Attempt.CatchUp(ctx)` returns `iter.Seq2[Event, error]` and the budget. The attempt keeps the range bounds: after, up to the last event before the attempt began, other turns' events (a handover), this turn's events (a continuation). `handover.Prompt(ctx, t, a)` selects in two passes, one number per event, then renders the chosen ones, and returns the read error. Both break every caller once; the module is below v1. Measured with a backend that has not seen 500 tool results of 100 KB: 52 MB held during `Run` before, 3 KB after. `TestHandoverDoesNotHoldTheThreadWhileTheBackendRuns` guards it. Rejected: shortening each event as it is read, which keeps the signature but changes what `CatchUp` returns and still holds every message.
+

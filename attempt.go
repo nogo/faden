@@ -17,7 +17,7 @@ type Attempt struct {
 	store   Store
 	turn    Turn
 	cursor  json.RawMessage
-	catchUp []Event
+	catchUp catchUpRange
 	budget  int
 	setup   Setup
 	usage   []ModelUsage
@@ -95,12 +95,50 @@ func (a *Attempt) NextEvent(ctx context.Context, after int64) (*Event, error) {
 	return a.store.NextEvent(ctx, a.turn.Session, after)
 }
 
-// CatchUp returns the events this backend has not seen and the byte budget
-// for selecting from them; zero budget means 16,000. After a handover they
-// are the session's events since the backend last ran; on a continuation
-// that needs a prompt, they also hold what earlier attempts of the turn
-// stored. handover.Prompt renders them.
-func (a *Attempt) CatchUp() ([]Event, int) { return a.catchUp, a.budget }
+// CatchUp yields the events this backend has not seen, read from the store
+// while the caller ranges, and the byte budget for selecting from them; zero
+// budget means 16,000. After a handover they are the session's events since
+// the backend last ran; on a continuation that needs a prompt, they also hold
+// what earlier attempts of the turn stored. The sequence can be ranged over
+// more than once and yields the same events each time. handover.Prompt
+// renders them.
+func (a *Attempt) CatchUp(ctx context.Context) (iter.Seq2[Event, error], int) {
+	return a.catchUp.events(ctx, a.store, a.turn), a.budget
+}
+
+// catchUpRange is what CatchUp yields, kept as bounds rather than events,
+// because the events a backend has not seen can be the whole thread.
+type catchUpRange struct {
+	after  int64 // events above this sequence number
+	upto   int64 // up to this one: what was stored before the attempt began
+	others bool  // the events of other turns: a handover
+	own    bool  // this turn's earlier events: a continuation with a prompt
+}
+
+func (c catchUpRange) events(ctx context.Context, store Store, t Turn) iter.Seq2[Event, error] {
+	return func(yield func(Event, error) bool) {
+		if !c.others && !c.own {
+			return
+		}
+		for e, err := range store.Events(ctx, t.Session, c.after) {
+			if err != nil {
+				yield(Event{}, err)
+				return
+			}
+			if e.Seq > c.upto {
+				return
+			}
+			mine := e.RequestID == t.RequestID
+			// This turn's handover marker is bookkeeping, not thread.
+			if mine && (!c.own || e.Kind == Handover) || !mine && !c.others {
+				continue
+			}
+			if !yield(e, nil) {
+				return
+			}
+		}
+	}
+}
 
 // EmitFragment sends a best-effort fragment to current watchers. Oversized
 // fragments (over 4096 bytes) are dropped. The attempt supplies RequestID.

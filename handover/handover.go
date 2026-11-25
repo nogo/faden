@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
+	"iter"
 	"strings"
 	"unicode/utf8"
 
@@ -29,50 +29,88 @@ type Item struct {
 // Select keeps the first user message, then the newest items that fit.
 // The request consumes budget but is sent separately and is never shortened.
 func Select(events []faden.Event, request string, budget int) []Item {
+	items, _ := selectFrom(func(yield func(faden.Event, error) bool) {
+		for _, e := range events {
+			if !yield(e, nil) {
+				return
+			}
+		}
+	}, request, budget)
+	return items
+}
+
+// selectFrom is Select over a sequence it ranges over twice: once to
+// measure each event's text, once to render the chosen ones. It holds one
+// number per event and the chosen texts, never the events, because a tool
+// output can be megabytes and a thread holds many.
+func selectFrom(events iter.Seq2[faden.Event, error], request string, budget int) ([]Item, error) {
 	if budget <= 0 {
 		budget = DefaultBudget
 	}
-	remaining := budget - len(request)
-	// Only chosen events get a text: rendering every event of a long thread
-	// would copy every tool output.
-	chosen := make([]bool, len(events))
-	texts := make([]string, len(events))
-	first := slices.IndexFunc(events, func(e faden.Event) bool { return e.Kind == faden.UserMessage })
-	if first >= 0 {
-		chosen[first], texts[first] = true, text(events[first])
-		remaining -= len(texts[first])
+	var sizes []int
+	first := -1
+	for e, err := range events {
+		if err != nil {
+			return nil, err
+		}
+		if first < 0 && e.Kind == faden.UserMessage {
+			first = len(sizes)
+		}
+		sizes = append(sizes, len(text(e)))
 	}
-	for i := len(events) - 1; i >= 0; i-- {
+	remaining := budget - len(request)
+	chosen := make([]bool, len(sizes))
+	if first >= 0 {
+		chosen[first] = true
+		remaining -= sizes[first]
+	}
+	for i := len(sizes) - 1; i >= 0; i-- {
 		if i == first {
 			continue
 		}
-		s := text(events[i])
-		if len(s) > remaining {
+		if sizes[i] > remaining {
 			break
 		}
-		chosen[i], texts[i] = true, s
-		remaining -= len(s)
+		chosen[i] = true
+		remaining -= sizes[i]
 	}
 	var items []Item
-	for i := 0; i < len(events); {
-		if !chosen[i] {
-			start := events[i].Seq
-			end := start
-			for i < len(events) && !chosen[i] {
-				end = events[i].Seq
-				i++
-			}
+	var start, end int64 // the omitted range being gathered; zero when none
+	omitted := func() {
+		if start != 0 {
 			items = append(items, Item{"user", fmt.Sprintf("Omitted events %d-%d; use %s to read them.", start, end, ThreadTool)})
+			start = 0
+		}
+	}
+	i := 0
+	for e, err := range events {
+		if err != nil {
+			return nil, err
+		}
+		if i == len(sizes) {
+			return nil, errors.New("handover: the events changed between two reads")
+		}
+		if !chosen[i] {
+			if start == 0 {
+				start = e.Seq
+			}
+			end = e.Seq
+			i++
 			continue
 		}
+		omitted()
 		role := "user"
-		if events[i].Kind == faden.AssistantMessage {
+		if e.Kind == faden.AssistantMessage {
 			role = "assistant"
 		}
-		items = append(items, Item{role, texts[i]})
+		items = append(items, Item{role, text(e)})
 		i++
 	}
-	return items
+	if i != len(sizes) {
+		return nil, errors.New("handover: the events changed between two reads")
+	}
+	omitted()
+	return items, nil
 }
 
 // text is an event's catch-up text. Items other than user and assistant
@@ -124,16 +162,21 @@ func clip(s string, n int) string {
 // Prompt is what a CLI backend sends for t: its input, preceded by one
 // attributed text block of a's catch-up when it has one. Context goes
 // immediately before the input and does not consume the selection budget.
-func Prompt(t faden.Turn, a *faden.Attempt) string {
-	catchUp, budget := a.CatchUp()
-	if len(catchUp) == 0 {
+// It fails when the catch-up cannot be read.
+func Prompt(ctx context.Context, t faden.Turn, a *faden.Attempt) (string, error) {
+	events, budget := a.CatchUp(ctx)
+	items, err := selectFrom(events, t.Input, budget)
+	if err != nil {
+		return "", fmt.Errorf("handover: catch-up: %w", err)
+	}
+	if len(items) == 0 {
 		if t.Context != "" {
-			return t.Context + "\n\n" + t.Input
+			return t.Context + "\n\n" + t.Input, nil
 		}
-		return t.Input
+		return t.Input, nil
 	}
 	var b strings.Builder
-	for _, item := range Select(catchUp, t.Input, budget) {
+	for _, item := range items {
 		fmt.Fprintf(&b, "[%s]\n%s\n", item.Role, item.Text)
 	}
 	b.WriteString("\n")
@@ -142,7 +185,7 @@ func Prompt(t faden.Turn, a *faden.Attempt) string {
 		b.WriteString("\n\n")
 	}
 	b.WriteString(t.Input)
-	return b.String()
+	return b.String(), nil
 }
 
 // ThreadTool is the name of the read-only tool that returns a session's

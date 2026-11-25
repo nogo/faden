@@ -370,7 +370,11 @@ func TestContinuationCarriesTheKilledTurnsStoredEvents(t *testing.T) {
 			var catchUp []faden.Event
 			b := &fake{promptless: promptless, run: func(_ context.Context, got faden.Turn, a *faden.Attempt) error {
 				turn = got
-				catchUp, _ = a.CatchUp()
+				events, _ := a.CatchUp(t.Context())
+				var err error
+				if catchUp, err = faden.CollectEvents(events); err != nil {
+					return err
+				}
 				return nil
 			}}
 			r, err := faden.Open(store, map[string]faden.Backend{"fake": b})
@@ -657,7 +661,11 @@ func TestCancelPendingDoesNotAdvanceBackendHistory(t *testing.T) {
 		if turn.RequestID != "next" {
 			t.Error("cancelled backend ran")
 		}
-		catchUp, _ = a.CatchUp()
+		events, _ := a.CatchUp(t.Context())
+		var err error
+		if catchUp, err = faden.CollectEvents(events); err != nil {
+			return err
+		}
 		return nil
 	}}
 	r, err := faden.Open(store, map[string]faden.Backend{"fake": first, "second": second})

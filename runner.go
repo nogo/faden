@@ -49,23 +49,24 @@ type Runner struct {
 
 // history is what a turn needs from its session's earlier events. One pass
 // gathers it while holding one event at a time: the other turns are kept as
-// their last sequence numbers, and only this turn's own events are kept whole.
+// their last sequence numbers, and this turn's own events as a range.
 type history struct {
 	last      map[string]int64 // request id of another turn -> seq of its last event
 	lastOther string           // request id of the newest event of another turn
 	marker    *Event           // this turn's handover event, if a retry finds one
-	own       []Event          // this turn's other events, when the caller keeps them
+	firstOwn  int64            // seq of this turn's first other event, or 0
+	lastSeq   int64            // seq of the session's last event
 	hasInput  bool             // this turn's user message is stored
 }
 
-// readHistory reads the session once before t runs. keepOwn keeps t's own
-// events for a continuation prompt.
-func (r *Runner) readHistory(t Turn, keepOwn bool) (history, error) {
+// readHistory reads the session once before t runs.
+func (r *Runner) readHistory(t Turn) (history, error) {
 	h := history{last: map[string]int64{}}
 	for e, err := range r.store.Events(r.ctx, t.Session, 0) {
 		if err != nil {
 			return h, err
 		}
+		h.lastSeq = e.Seq
 		switch {
 		case e.RequestID != t.RequestID:
 			h.last[e.RequestID] = e.Seq
@@ -74,8 +75,8 @@ func (r *Runner) readHistory(t Turn, keepOwn bool) (history, error) {
 			h.marker = &e
 		default:
 			h.hasInput = h.hasInput || e.Kind == UserMessage
-			if keepOwn {
-				h.own = append(h.own, e)
+			if h.firstOwn == 0 {
+				h.firstOwn = e.Seq
 			}
 		}
 	}
@@ -118,14 +119,7 @@ func (r *Runner) catchUp(a *Attempt, h history) error {
 		}
 	}
 	a.budget = boundary.Budget
-	for e, err := range r.store.Events(r.ctx, t.Session, boundary.After) {
-		if err != nil {
-			return err
-		}
-		if e.RequestID != t.RequestID {
-			a.catchUp = append(a.catchUp, e)
-		}
-	}
+	a.catchUp.others, a.catchUp.after = true, boundary.After
 	return nil
 }
 
@@ -692,15 +686,18 @@ func (r *Runner) run(t Turn) error {
 	// One pass serves catch-up, continuation and the input check. catchUp can
 	// emit only this turn's handover marker, which neither later step reads.
 	continues := t.Attempts > 1 && !backend.ContinuesWithoutPrompt()
-	h, err := r.readHistory(t, continues)
+	h, err := r.readHistory(t)
 	if err != nil {
 		return fmt.Errorf("faden: turn %s: %w", t.RequestID, err)
 	}
+	// The catch-up ends here: the input and what this attempt stores are
+	// not news to the backend.
+	a.catchUp.upto = h.lastSeq
 	if err := r.catchUp(a, h); err != nil {
 		return fmt.Errorf("faden: handover turn %s: %w", t.RequestID, err)
 	}
 	if continues {
-		r.addOwnEvents(a, h.own)
+		r.addOwnEvents(a, h)
 	}
 	if err := r.recordInput(a, h); err != nil {
 		return fmt.Errorf("faden: record input of turn %s: %w", t.RequestID, err)
@@ -731,13 +728,19 @@ func (r *Runner) run(t Turn) error {
 	return r.finish(t, Done, "")
 }
 
-// addOwnEvents appends what earlier attempts of the turn stored to its
+// addOwnEvents adds what earlier attempts of the turn stored to its
 // catch-up, so a backend that only sees a continuation prompt still learns
 // what the turn already did. A CLI's own session keeps little of a killed
-// turn. own holds no handover marker: it is bookkeeping.
-func (r *Runner) addOwnEvents(a *Attempt, own []Event) {
+// turn.
+func (r *Runner) addOwnEvents(a *Attempt, h history) {
+	if h.firstOwn == 0 {
+		return
+	}
 	if a.budget == 0 {
 		a.budget = r.budget
 	}
-	a.catchUp = append(a.catchUp, own...)
+	if !a.catchUp.others {
+		a.catchUp.after = h.firstOwn - 1
+	}
+	a.catchUp.own = true
 }
