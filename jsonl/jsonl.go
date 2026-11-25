@@ -215,14 +215,16 @@ func (s *Store) catchUp(sess *session) error {
 // lines calls fn with each complete line of r, without its newline, and the
 // line's offset; r starts at offset base. It returns the offset after the
 // last complete line. A last line without a newline is torn and not passed.
-func lines(r io.Reader, base int64, fn func(off int64, line []byte) error) (int64, error) {
-	br := bufio.NewReaderSize(r, 64<<10)
+// fn must not keep line: its bytes are reused for the next line.
+func lines(r *io.SectionReader, base int64, fn func(off int64, line []byte) error) (int64, error) {
+	// A short read, such as an append read back, gets a buffer of its size.
+	br := bufio.NewReaderSize(r, int(min(r.Size(), 64<<10)))
+	var long []byte // a line longer than the buffer, gathered here and reused
 	off := base
 	for {
 		line, err := br.ReadSlice('\n')
 		if errors.Is(err, bufio.ErrBufferFull) {
-			// Only a line longer than the buffer is copied.
-			long := slices.Clone(line)
+			long = append(long[:0], line...)
 			for errors.Is(err, bufio.ErrBufferFull) {
 				line, err = br.ReadSlice('\n')
 				long = append(long, line...)
