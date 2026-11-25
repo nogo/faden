@@ -10,9 +10,11 @@
 // several processes must agree on: a new session, a submitted turn (a
 // request id is unique across processes) and the cut of a torn last line.
 //
-// Sessions, turns and cursors stay in memory; events stay in the file. The
-// store keeps one file offset per event and reads events when asked, so its
-// memory does not grow with what tools and models wrote.
+// Sessions, cursors and unfinished turns stay in memory; events and finished
+// turns stay in the file. The store keeps one file offset per event and per
+// turn and reads them when asked, so its memory does not grow with what
+// users, tools and models wrote. A session's file is open only while this
+// store owns the session or reads it.
 package jsonl
 
 import (
@@ -51,11 +53,15 @@ type record struct {
 type session struct {
 	meta   faden.Session
 	path   string
-	file   *os.File
+	file   *os.File // open and flocked while this store owns the session, else nil
 	size   int64    // end of the last complete line read; bytes beyond it are a torn line or not read yet
-	owned  bool     // this store holds the flock on file
-	turns  []string // request ids, oldest first
 	events []int64  // file offset of each event line; event n is at events[n-1]
+}
+
+// turnRef is where the latest record of a turn is.
+type turnRef struct {
+	sess *session
+	off  int64
 }
 
 // Store implements faden.Store.
@@ -66,7 +72,10 @@ type Store struct {
 	mu       sync.Mutex // guards everything below
 	dirDepth int
 	sessions map[string]*session
-	turns    map[string]faden.Turn // by request id
+	turns    map[string]turnRef // every turn, by request id
+	// unfinished holds the pending and running turns whole, by request id:
+	// the runner reads them all the time, and there are few.
+	unfinished map[string]*faden.Turn
 }
 
 // Open opens dir, creating it if needed, and loads the sessions in it. It
@@ -79,7 +88,7 @@ func Open(dir string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("jsonl: open: %w", err)
 	}
-	s := &Store{dir: dir, lock: lock, sessions: map[string]*session{}, turns: map[string]faden.Turn{}}
+	s := &Store{dir: dir, lock: lock, sessions: map[string]*session{}, turns: map[string]turnRef{}, unfinished: map[string]*faden.Turn{}}
 	s.mu.Lock()
 	err = s.lockDir()
 	if err == nil {
@@ -150,22 +159,14 @@ func (s *Store) refresh(cleanup bool) error {
 // does not exist or has no complete first record: that is a session whose
 // creation is not finished or was interrupted.
 func (s *Store) load(name string, cleanup bool) (*session, error) {
-	f, err := os.OpenFile(name, os.O_RDWR|os.O_APPEND, 0o644)
-	if errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(name); errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
-	if err != nil {
-		return nil, fmt.Errorf("jsonl: load %s: %w", name, err)
-	}
-	sess := &session{path: name, file: f}
+	sess := &session{path: name}
 	if err := s.catchUp(sess); err != nil {
-		f.Close()
 		return nil, err
 	}
 	if sess.size == 0 {
-		if err := f.Close(); err != nil {
-			return nil, fmt.Errorf("jsonl: close interrupted session %s: %w", name, err)
-		}
 		if cleanup {
 			if err := os.Remove(name); err != nil {
 				return nil, fmt.Errorf("jsonl: remove interrupted session %s: %w", name, err)
@@ -174,7 +175,6 @@ func (s *Store) load(name string, cleanup bool) (*session, error) {
 		return nil, nil
 	}
 	if sess.meta.ID == "" {
-		f.Close()
 		return nil, fmt.Errorf("jsonl: %s has no session record", name)
 	}
 	s.sessions[sess.meta.ID] = sess
@@ -185,14 +185,25 @@ func (s *Store) load(name string, cleanup bool) (*session, error) {
 // since the last read, by this store or another process. A torn last line is
 // not applied. Event bodies are checked but not kept.
 func (s *Store) catchUp(sess *session) error {
-	info, err := sess.file.Stat()
+	var info os.FileInfo
+	var err error
+	if sess.file != nil {
+		info, err = sess.file.Stat()
+	} else {
+		info, err = os.Stat(sess.path) // no open file for a session that has not changed
+	}
 	if err != nil {
 		return fmt.Errorf("jsonl: stat %s: %w", sess.path, err)
 	}
 	if info.Size() == sess.size {
 		return nil
 	}
-	good, err := lines(io.NewSectionReader(sess.file, sess.size, info.Size()-sess.size), sess.size, func(off int64, line []byte) error {
+	f, done, err := s.handle(sess)
+	if err != nil {
+		return err
+	}
+	defer done()
+	good, err := lines(io.NewSectionReader(f, sess.size, info.Size()-sess.size), sess.size, func(off int64, line []byte) error {
 		var rec struct {
 			record
 			Event *struct{} `json:"event"` // validates the body without keeping it
@@ -260,10 +271,13 @@ func (s *Store) apply(sess *session, rec record, off int64) error {
 		if rec.Turn == nil {
 			return errors.New("turn record without turn")
 		}
-		if _, known := s.turns[rec.Turn.RequestID]; !known {
-			sess.turns = append(sess.turns, rec.Turn.RequestID)
+		t := rec.Turn
+		s.turns[t.RequestID] = turnRef{sess: sess, off: off}
+		if t.Status.Final() {
+			delete(s.unfinished, t.RequestID)
+		} else {
+			s.unfinished[t.RequestID] = t
 		}
-		s.turns[rec.Turn.RequestID] = *rec.Turn
 	case "event":
 		sess.events = append(sess.events, off)
 	case "cursor":
@@ -275,6 +289,51 @@ func (s *Store) apply(sess *session, rec record, off int64) error {
 		return fmt.Errorf("unknown record type %q", rec.Type)
 	}
 	return nil
+}
+
+// handle returns the session's file for one operation: the owned one, or a
+// new one that done closes. The caller holds s.mu.
+func (s *Store) handle(sess *session) (f *os.File, done func(), err error) {
+	if sess.file != nil {
+		return sess.file, func() {}, nil
+	}
+	f, err = os.OpenFile(sess.path, os.O_RDWR|os.O_APPEND, 0)
+	if err != nil {
+		return nil, nil, fmt.Errorf("jsonl: open %s: %w", sess.path, err)
+	}
+	return f, func() { f.Close() }, nil
+}
+
+// readTurn reads the turn record at ref. The caller holds s.mu.
+func (s *Store) readTurn(ref turnRef) (faden.Turn, error) {
+	f, done, err := s.handle(ref.sess)
+	if err != nil {
+		return faden.Turn{}, err
+	}
+	defer done()
+	line, err := bufio.NewReader(io.NewSectionReader(f, ref.off, ref.sess.size-ref.off)).ReadBytes('\n')
+	if err != nil {
+		return faden.Turn{}, fmt.Errorf("jsonl: read turn at %s:%d: %w", ref.sess.path, ref.off, err)
+	}
+	var rec record
+	if err := json.Unmarshal(line, &rec); err != nil || rec.Turn == nil {
+		return faden.Turn{}, fmt.Errorf("jsonl: read turn at %s:%d: not a turn record: %v", ref.sess.path, ref.off, err)
+	}
+	return *rec.Turn, nil
+}
+
+// stored returns a turn this store has read, and false for an unknown one.
+// The caller holds s.mu.
+func (s *Store) stored(requestID string) (faden.Turn, bool, error) {
+	if t, ok := s.unfinished[requestID]; ok {
+		return *t, true, nil
+	}
+	ref, ok := s.turns[requestID]
+	if !ok {
+		return faden.Turn{}, false, nil
+	}
+	t, err := s.readTurn(ref)
+	return t, true, err
 }
 
 // write appends records to the end of the session file in one write and
@@ -289,17 +348,22 @@ func (s *Store) write(sess *session, recs ...record) error {
 			return fmt.Errorf("jsonl: encode: %w", err)
 		}
 	}
-	before, err := sess.file.Stat()
+	f, done, err := s.handle(sess)
+	if err != nil {
+		return err
+	}
+	defer done()
+	before, err := f.Stat()
 	if err != nil {
 		return fmt.Errorf("jsonl: append: %w", err)
 	}
-	if n, err := sess.file.Write(buf.Bytes()); err != nil {
-		if after, serr := sess.file.Stat(); serr == nil && after.Size() == before.Size()+int64(n) {
-			sess.file.Truncate(before.Size())
+	if n, err := f.Write(buf.Bytes()); err != nil {
+		if after, serr := f.Stat(); serr == nil && after.Size() == before.Size()+int64(n) {
+			f.Truncate(before.Size())
 		}
 		return fmt.Errorf("jsonl: append: %w", err)
 	}
-	if err := sess.file.Sync(); err != nil {
+	if err := f.Sync(); err != nil {
 		return fmt.Errorf("jsonl: sync: %w", err)
 	}
 	if err := s.catchUp(sess); err != nil {
@@ -311,24 +375,29 @@ func (s *Store) write(sess *session, recs ...record) error {
 // claim takes the session's flock without waiting and cuts a torn last line
 // a dead writer left. The caller holds s.mu.
 func (s *Store) claim(sess *session) error {
-	if sess.owned {
+	if sess.file != nil {
 		return nil
 	}
-	if err := lockFile(sess.file, false); err != nil {
+	f, err := os.OpenFile(sess.path, os.O_RDWR|os.O_APPEND, 0)
+	if err != nil {
+		return fmt.Errorf("jsonl: claim %s: %w", sess.path, err)
+	}
+	if err := lockFile(f, false); err != nil {
+		f.Close()
 		return err
 	}
+	sess.file = f
 	// Under the directory lock no submitter is half way through an append,
 	// so bytes past the last complete line belong to a dead writer.
-	err := s.lockDir()
+	err = s.lockDir()
 	if err == nil {
 		err = s.heal(sess)
 		s.unlockDir()
 	}
 	if err != nil {
-		unlockFile(sess.file)
+		s.release(sess)
 		return err
 	}
-	sess.owned = true
 	return nil
 }
 
@@ -351,10 +420,11 @@ func (s *Store) heal(sess *session) error {
 	return nil
 }
 
+// release closes the session's file, which drops its flock.
 func (s *Store) release(sess *session) {
-	if sess.owned {
-		unlockFile(sess.file)
-		sess.owned = false
+	if sess.file != nil {
+		sess.file.Close()
+		sess.file = nil
 	}
 }
 
@@ -362,7 +432,7 @@ func (s *Store) release(sess *session) {
 // takes one for the single write, so a session owned elsewhere fails with
 // faden.ErrLocked and an unowned one stays consistent.
 func (s *Store) asOwner(sess *session, fn func() error) error {
-	if !sess.owned {
+	if sess.file == nil {
 		if err := s.claim(sess); err != nil {
 			return err
 		}
@@ -398,15 +468,18 @@ func (s *Store) create(id string) (*session, error) {
 	if err != nil {
 		return nil, fmt.Errorf("jsonl: create session %s: %w", id, err)
 	}
-	if err := f.Truncate(0); err != nil {
-		f.Close()
+	err = f.Truncate(0)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
 		return nil, fmt.Errorf("jsonl: create session %s: %w", id, err)
 	}
 	if d, err := os.Open(s.dir); err == nil {
 		d.Sync()
 		d.Close()
 	}
-	return &session{path: name, file: f}, nil
+	return &session{path: name}, nil
 }
 
 // SubmitTurn implements faden.Store. It holds the directory lock, so the same
@@ -421,8 +494,8 @@ func (s *Store) SubmitTurn(_ context.Context, t faden.Turn) (faden.Turn, error) 
 	if err := s.refresh(false); err != nil {
 		return faden.Turn{}, err
 	}
-	if known, ok := s.turns[t.RequestID]; ok {
-		return copyTurn(known), nil
+	if known, ok, err := s.stored(t.RequestID); ok || err != nil {
+		return copyTurn(known), err
 	}
 	if t.RequestID == "" || t.Session == "" {
 		return faden.Turn{}, errors.New("jsonl: submit: request id and session are required")
@@ -440,7 +513,6 @@ func (s *Store) SubmitTurn(_ context.Context, t faden.Turn) (faden.Turn, error) 
 		meta := faden.Session{ID: t.Session, Created: t.Created}
 		recs = append([]record{{Type: "session", Session: &meta}}, recs...)
 		if err := s.write(sess, recs...); err != nil {
-			sess.file.Close()
 			return faden.Turn{}, err
 		}
 		s.sessions[t.Session] = sess
@@ -449,7 +521,7 @@ func (s *Store) SubmitTurn(_ context.Context, t faden.Turn) (faden.Turn, error) 
 	// A turn for a session another process owns is appended without its
 	// lock: the owner reads it with its next catch-up. Otherwise this store
 	// takes the claim for the append, to cut a torn last line first.
-	had := sess.owned
+	had := sess.file != nil
 	err := s.claim(sess)
 	switch {
 	case errors.Is(err, faden.ErrLocked):
@@ -468,17 +540,17 @@ func (s *Store) SubmitTurn(_ context.Context, t faden.Turn) (faden.Turn, error) 
 
 // turn returns a stored turn, reading the file of its session first.
 func (s *Store) turn(requestID string) (faden.Turn, error) {
-	t, ok := s.turns[requestID]
-	if ok {
-		if sess, known := s.sessions[t.Session]; known {
-			if err := s.catchUp(sess); err != nil {
-				return faden.Turn{}, err
-			}
+	if ref, ok := s.turns[requestID]; ok {
+		if err := s.catchUp(ref.sess); err != nil {
+			return faden.Turn{}, err
 		}
 	} else if err := s.refresh(false); err != nil {
 		return faden.Turn{}, err
 	}
-	t, ok = s.turns[requestID]
+	t, ok, err := s.stored(requestID)
+	if err != nil {
+		return faden.Turn{}, err
+	}
 	if !ok {
 		return faden.Turn{}, fmt.Errorf("jsonl: turn %s: %w", requestID, faden.ErrNotFound)
 	}
@@ -492,9 +564,12 @@ func (s *Store) SaveTurn(_ context.Context, t faden.Turn) error {
 	if _, err := s.turn(t.RequestID); err != nil {
 		return fmt.Errorf("jsonl: save turn %s: %w", t.RequestID, err)
 	}
-	sess := s.sessions[s.turns[t.RequestID].Session]
+	sess := s.turns[t.RequestID].sess
 	return s.asOwner(sess, func() error {
-		known := s.turns[t.RequestID]
+		known, _, err := s.stored(t.RequestID)
+		if err != nil {
+			return err
+		}
 		known.Progress = t.Progress
 		known.Usage = slices.Clone(t.Usage) // the caller keeps its own slice
 		return s.write(sess, record{Type: "turn", Turn: &known})
@@ -524,13 +599,9 @@ func (s *Store) Unfinished(_ context.Context) ([]faden.Turn, error) {
 	if err := s.refresh(false); err != nil {
 		return nil, err
 	}
-	var out []faden.Turn
-	for _, sess := range s.sessions {
-		for _, id := range sess.turns {
-			if t := s.turns[id]; !t.Status.Final() {
-				out = append(out, copyTurn(t))
-			}
-		}
+	out := make([]faden.Turn, 0, len(s.unfinished))
+	for _, t := range s.unfinished {
+		out = append(out, copyTurn(*t))
 	}
 	slices.SortFunc(out, func(a, b faden.Turn) int {
 		if c := a.Created.Compare(b.Created); c != 0 {
@@ -580,14 +651,14 @@ func (s *Store) Events(ctx context.Context, id string, after int64) iter.Seq2[fa
 		s.mu.Lock()
 		sess, err := s.lookup(id)
 		var offsets []int64
-		var file *os.File
+		var path string
 		var size int64
 		if err == nil {
 			after = max(after, 0)
 			if after < int64(len(sess.events)) {
 				offsets = sess.events[after:len(sess.events):len(sess.events)]
 			}
-			file, size = sess.file, sess.size
+			path, size = sess.path, sess.size
 		}
 		s.mu.Unlock()
 		if err != nil {
@@ -597,6 +668,14 @@ func (s *Store) Events(ctx context.Context, id string, after int64) iter.Seq2[fa
 		if len(offsets) == 0 {
 			return
 		}
+		// Its own handle: Release and Close may close the session's file
+		// while this loop reads.
+		file, err := os.Open(path)
+		if err != nil {
+			yield(faden.Event{}, fmt.Errorf("jsonl: events: %w", err))
+			return
+		}
+		defer file.Close()
 		errStop := errors.New("stop")
 		n := 0
 		start := offsets[0]
@@ -669,10 +748,14 @@ func (s *Store) Close() error {
 	defer s.mu.Unlock()
 	var errs []error
 	for _, sess := range s.sessions {
-		errs = append(errs, sess.file.Close())
+		if sess.file != nil {
+			errs = append(errs, sess.file.Close())
+			sess.file = nil
+		}
 	}
 	s.sessions = map[string]*session{}
-	s.turns = map[string]faden.Turn{}
+	s.turns = map[string]turnRef{}
+	s.unfinished = map[string]*faden.Turn{}
 	errs = append(errs, s.lock.Close())
 	return errors.Join(errs...)
 }
@@ -699,7 +782,12 @@ func (s *Store) NextEvent(ctx context.Context, id string, after int64) (*faden.E
 	if after+1 < int64(len(sess.events)) {
 		end = sess.events[after+1]
 	}
-	line, err := bufio.NewReader(io.NewSectionReader(sess.file, start, end-start)).ReadBytes('\n')
+	f, done, err := s.handle(sess)
+	if err != nil {
+		return nil, fmt.Errorf("jsonl: next event: %w", err)
+	}
+	defer done()
+	line, err := bufio.NewReader(io.NewSectionReader(f, start, end-start)).ReadBytes('\n')
 	if err != nil {
 		return nil, fmt.Errorf("jsonl: next event: %w", err)
 	}

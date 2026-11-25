@@ -45,7 +45,7 @@ What a host sees is the product. Keep it small; every exported name is a promise
 ### Memory
 - Read a session's events in one pass per operation and keep only what the operation needs. `Store.Events` yields one event at a time; collect it only where the whole range is the answer (llama's transcript).
 - Stream files and process output line by line (`bufio.Reader`, `bufio.Scanner`). Never `os.ReadFile` a store file or `io.ReadAll` an unbounded body. Cap every read that has no natural end.
-- A store keeps in memory only what it must answer at once (sessions, turns, cursors). Events stay on disk or in the database, found by offset or key.
+- A store keeps in memory only what it must answer at once (sessions, cursors, unfinished turns). Events and finished turns stay on disk or in the database, found by offset or key. A file stays open only while it is in use.
 - Copy a buffer only when you keep it. A scanner's line is copied into the event that stores it. A line that is dropped is never copied.
 - Shorten before you build. Cut text with a byte bound before you join or convert it. Never use `[]rune(s)` or concatenate fields of unbounded size.
 - Store a fact once. A backend whose CLI keeps its own session (Claude Code, Codex) stores normalized fields only. A native payload is stored only by a backend that rebuilds its transcript from it (llama).
