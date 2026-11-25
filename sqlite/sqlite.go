@@ -246,7 +246,7 @@ func readRows[T any](rows *sql.Rows) ([]T, error) {
 	defer rows.Close()
 	var out []T
 	for rows.Next() {
-		var data []byte
+		var data sql.RawBytes // the driver's bytes, valid until Next: decoded, never kept
 		if err := rows.Scan(&data); err != nil {
 			return nil, err
 		}
