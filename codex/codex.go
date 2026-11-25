@@ -6,27 +6,22 @@
 package codex
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/nogo/faden"
 	"github.com/nogo/faden/handover"
+	"github.com/nogo/faden/internal/agentproc"
 	"github.com/nogo/faden/internal/attach"
 )
 
 // Runtime runs keyed commands and stops leftovers before continuation.
 type Runtime = faden.Runtime
-
-// maxStderr bounds the stderr a run keeps in Result.Output.
-const maxStderr = 64 << 10
 
 // Config wires the backend to the host's runtime.
 type Config struct {
@@ -39,9 +34,8 @@ type Config struct {
 
 // Backend implements faden.Backend for Codex.
 type Backend struct {
-	cfg    Config
-	mu     sync.Mutex // guards active
-	active map[string]func()
+	cfg   Config
+	procs agentproc.Running
 }
 
 // New validates the host's collaborators.
@@ -50,7 +44,7 @@ func New(cfg Config) (*Backend, error) {
 		return nil, errors.New("codex: runtime is required")
 	}
 	cfg.Args = append([]string(nil), cfg.Args...)
-	return &Backend{cfg: cfg, active: make(map[string]func())}, nil
+	return &Backend{cfg: cfg}, nil
 }
 
 // ContinuesWithoutPrompt reports false so the runner supplies stored events
@@ -59,12 +53,7 @@ func (*Backend) ContinuesWithoutPrompt() bool { return false }
 
 // Stop interrupts an active turn, then stops its app-server or any leftover.
 func (b *Backend) Stop(ctx context.Context, t faden.Turn) error {
-	b.mu.Lock()
-	stop := b.active[t.RequestID]
-	b.mu.Unlock()
-	if stop != nil {
-		stop()
-	}
+	b.procs.Interrupt(t.RequestID)
 	return b.cfg.Runtime.Stop(ctx, t.RequestID)
 }
 
@@ -118,9 +107,6 @@ const (
 	idInterrupt  = 4
 )
 
-// graceAfterTurn is how long Codex gets to exit after its stdin closes.
-const graceAfterTurn = 5 * time.Second
-
 type message struct {
 	ID     json.RawMessage `json:"id"`
 	Method string          `json:"method"`
@@ -150,85 +136,36 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 	argv = append(argv, setup.Args...)
 
 	// The app-server outlives ctx: on cancellation it first gets turn/interrupt.
-	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	defer cancel()
-	// An *os.File lets the child read stdin directly, so no copying goroutine
-	// can keep Wait blocked after the child exits.
-	stdinR, stdinW, err := os.Pipe()
+	c := &conn{}
+	proc, err := b.procs.Start(ctx, b.cfg.Runtime, faden.Command{Key: t.RequestID, Argv: argv, Env: setup.Env}, c.interruptMessage)
 	if err != nil {
-		return fmt.Errorf("codex: stdin: %w", err)
+		return fmt.Errorf("codex: %w", err)
 	}
-	stdoutR, stdoutW := io.Pipe()
-	defer stdinW.Close()
-	defer stdoutR.Close()
-	type outcome struct {
-		result faden.Result
-		err    error
-	}
-	done := make(chan outcome, 1)
-	go func() {
-		res, err := b.cfg.Runtime.Run(runCtx, faden.Command{Key: t.RequestID, Argv: argv, Env: setup.Env, Stdin: stdinR, Stdout: stdoutW, MaxOutput: maxStderr})
-		stdinR.Close()
-		stdoutW.CloseWithError(err)
-		done <- outcome{res, err}
-	}()
-
-	x.conn = &conn{stdin: stdinW, cancel: cancel}
-	defer b.track(ctx, runCtx, t.RequestID, x.conn)()
-	finish := func(ended bool, runErr error) error {
-		stdinW.Close()
-		// Nothing reads stdout from here on. Closed, it fails the runtime's
-		// copy of what Codex still writes, instead of blocking it forever.
-		stdoutR.Close()
-		var out outcome
-		if ended && runErr == nil {
-			select {
-			case out = <-done:
-			case <-time.After(graceAfterTurn):
-				cancel()
-				out = <-done
-			}
-			// Codex exited, or was stopped after its turn ended; either way the turn is complete.
-			out.err, out.result.ExitCode = nil, 0
-		} else {
-			cancel()
-			out = <-done
-		}
-		if runErr != nil {
-			return fmt.Errorf("codex: %w", runErr)
-		}
-		if out.err != nil {
-			return fmt.Errorf("codex: run: %w", out.err)
-		}
-		if !ended {
-			return errors.New("codex: stream ended without turn/completed")
-		}
-		return nil
-	}
-
-	if err := x.conn.request(idInitialize, "initialize", map[string]any{"clientInfo": map[string]string{"name": "faden", "version": "1"}}); err != nil {
-		return finish(false, err)
-	}
-	defer x.usage.report(a)
-	scan := bufio.NewScanner(stdoutR)
-	scan.Buffer(make([]byte, 4096), 16*1024*1024)
+	c.Proc, x.conn = proc, c
 	ended := false
-	var runErr error
-	for runErr == nil && !ended && scan.Scan() {
-		var m message
-		if err := json.Unmarshal(scan.Bytes(), &m); err != nil {
-			runErr = err
-			break
-		}
-		ended, runErr = x.handle(m)
+	runErr := c.request(idInitialize, "initialize", map[string]any{"clientInfo": map[string]string{"name": "faden", "version": "1"}})
+	if runErr == nil {
+		defer x.usage.report(a)
+		ended, runErr = proc.Read(func(line []byte) (bool, error) {
+			var m message
+			if err := json.Unmarshal(line, &m); err != nil {
+				return false, err
+			}
+			return x.handle(m)
+		})
 	}
-	if runErr == nil && !ended {
-		runErr = scan.Err()
-		if runErr != nil {
-			runErr = fmt.Errorf("stream: %w", runErr)
-		}
+	// Codex exits, or is stopped, after its turn ended; either way the turn
+	// is complete.
+	_, procErr := proc.Close(ended && runErr == nil)
+	switch {
+	case runErr != nil:
+		return fmt.Errorf("codex: %w", runErr)
+	case procErr != nil:
+		return fmt.Errorf("codex: run: %w", procErr)
+	case !ended:
+		return errors.New("codex: stream ended without turn/completed")
 	}
-	return finish(ended, runErr)
+	return nil
 }
 
 // turnInput is the input of turn/start: the prompt with a line for each file
@@ -255,56 +192,17 @@ func turnInput(ctx context.Context, t faden.Turn, a *faden.Attempt, dir string) 
 	return items, nil
 }
 
-// track lets Stop interrupt c while the attempt of requestID runs, and
-// interrupts c when ctx ends before runCtx does. Call the returned func
-// when the attempt ends. The runner cancels ctx and then calls Stop, which
-// kills the app-server; Stop interrupts first, so Codex learns of the
-// cancellation before it is killed.
-func (b *Backend) track(ctx, runCtx context.Context, requestID string, c *conn) (untrack func()) {
-	b.mu.Lock()
-	b.active[requestID] = c.interrupt
-	b.mu.Unlock()
-	watched := make(chan struct{})
-	go func() {
-		defer close(watched)
-		select {
-		case <-ctx.Done():
-			c.interrupt()
-		case <-runCtx.Done():
-		}
-	}()
-	return func() {
-		c.cancel()
-		<-watched
-		b.mu.Lock()
-		delete(b.active, requestID)
-		b.mu.Unlock()
-	}
-}
-
-// conn is one attempt's JSON-RPC conversation with an app-server. It owns
-// the write side of the pipe and the ids the reply loop learns, under one
-// lock, so an interrupt sent from another goroutine never interleaves with a
-// request and always names the current turn.
+// conn is one attempt's conversation with an app-server. It keeps the ids
+// the reply loop learns, so an interrupt names the current turn.
 type conn struct {
-	mu       sync.Mutex // guards writes to stdin, threadID and turnID
-	stdin    *os.File
+	*agentproc.Proc
+	mu       sync.Mutex // guards threadID and turnID
 	threadID string
 	turnID   string
-	cancel   context.CancelFunc // stops the app-server
-	once     sync.Once
-}
-
-func (c *conn) send(v map[string]any) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	data, _ := json.Marshal(v)
-	_, err := c.stdin.Write(append(data, '\n'))
-	return err
 }
 
 func (c *conn) request(id int, method string, params any) error {
-	return c.send(map[string]any{"id": id, "method": method, "params": params})
+	return c.Send(map[string]any{"id": id, "method": method, "params": params})
 }
 
 // learn keeps the thread and turn ids that m carries, so interrupt can name them.
@@ -339,21 +237,15 @@ func (c *conn) learn(m message) {
 	}
 }
 
-// interrupt sends turn/interrupt for the active turn, if Codex named one, and
-// then stops the app-server. Only the first call does anything.
-func (c *conn) interrupt() {
-	c.once.Do(func() {
-		// Release a blocked prompt write before waiting for the lock.
-		c.stdin.SetWriteDeadline(time.Now().Add(time.Second))
-		c.mu.Lock()
-		if c.turnID != "" {
-			data, _ := json.Marshal(map[string]any{"id": idInterrupt, "method": "turn/interrupt", "params": map[string]string{"threadId": c.threadID, "turnId": c.turnID}})
-			c.stdin.SetWriteDeadline(time.Now().Add(time.Second))
-			c.stdin.Write(append(data, '\n'))
-		}
-		c.mu.Unlock()
-		c.cancel()
-	})
+// interruptMessage is turn/interrupt for the active turn, or nil before
+// Codex named one.
+func (c *conn) interruptMessage() any {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.turnID == "" {
+		return nil
+	}
+	return map[string]any{"id": idInterrupt, "method": "turn/interrupt", "params": map[string]string{"threadId": c.threadID, "turnId": c.turnID}}
 }
 
 // exchange is the reply loop of one attempt: what it sends, what it stores,
@@ -374,7 +266,7 @@ func (x *exchange) handle(m message) (bool, error) {
 	x.conn.learn(m)
 	switch {
 	case m.Method != "" && len(m.ID) > 0:
-		return false, x.conn.send(declineOrReject(m))
+		return false, x.conn.Send(declineOrReject(m))
 	case m.Method == "item/agentMessage/delta":
 		var p struct {
 			Delta string `json:"delta"`
@@ -402,7 +294,7 @@ func (x *exchange) emit(e faden.Event) error { return x.a.Emit(x.ctx, e) }
 func (x *exchange) answer(m message) error {
 	switch string(m.ID) {
 	case fmt.Sprint(idInitialize):
-		if err := x.conn.send(map[string]any{"method": "initialized"}); err != nil {
+		if err := x.conn.Send(map[string]any{"method": "initialized"}); err != nil {
 			return err
 		}
 		params := map[string]any{}

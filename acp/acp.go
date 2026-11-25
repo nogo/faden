@@ -18,29 +18,23 @@
 package acp
 
 import (
-	"bufio"
 	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/nogo/faden"
 	"github.com/nogo/faden/handover"
+	"github.com/nogo/faden/internal/agentproc"
 	"github.com/nogo/faden/internal/attach"
 )
 
 // Runtime runs keyed commands and stops leftovers before continuation.
 type Runtime = faden.Runtime
-
-// maxStderr bounds the stderr a run keeps in Result.Output.
-const maxStderr = 64 << 10
 
 // Config wires the backend to the host's runtime and agent.
 type Config struct {
@@ -57,9 +51,8 @@ type Config struct {
 
 // Backend implements faden.Backend for an ACP agent.
 type Backend struct {
-	cfg    Config
-	mu     sync.Mutex // guards active
-	active map[string]func()
+	cfg   Config
+	procs agentproc.Running
 }
 
 // New validates the host's collaborators.
@@ -71,7 +64,7 @@ func New(cfg Config) (*Backend, error) {
 		return nil, errors.New("acp: command is required")
 	}
 	cfg.Command = append([]string(nil), cfg.Command...)
-	return &Backend{cfg: cfg, active: make(map[string]func())}, nil
+	return &Backend{cfg: cfg}, nil
 }
 
 // ContinuesWithoutPrompt reports false: ACP has no way to continue a prompt
@@ -80,12 +73,7 @@ func (*Backend) ContinuesWithoutPrompt() bool { return false }
 
 // Stop cancels an active prompt, then stops the agent or any leftover.
 func (b *Backend) Stop(ctx context.Context, t faden.Turn) error {
-	b.mu.Lock()
-	stop := b.active[t.RequestID]
-	b.mu.Unlock()
-	if stop != nil {
-		stop()
-	}
+	b.procs.Interrupt(t.RequestID)
 	return b.cfg.Runtime.Stop(ctx, t.RequestID)
 }
 
@@ -102,9 +90,6 @@ const (
 
 // codeAuthRequired is ACP's error code for an agent that needs a login.
 const codeAuthRequired = -32000
-
-// graceAfterTurn is how long the agent gets to exit after its stdin closes.
-const graceAfterTurn = 5 * time.Second
 
 type message struct {
 	ID     json.RawMessage `json:"id"`
@@ -140,89 +125,40 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 	argv := append(append([]string(nil), b.cfg.Command...), setup.Args...)
 
 	// The agent outlives ctx: on cancellation it first gets session/cancel.
-	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	defer cancel()
-	// An *os.File lets the child read stdin directly, so no copying goroutine
-	// can keep Wait blocked after the child exits.
-	stdinR, stdinW, err := os.Pipe()
+	c := &conn{}
+	proc, err := b.procs.Start(ctx, b.cfg.Runtime, faden.Command{Key: t.RequestID, Argv: argv, Env: setup.Env}, c.interruptMessage)
 	if err != nil {
-		return fmt.Errorf("acp: stdin: %w", err)
+		return fmt.Errorf("acp: %w", err)
 	}
-	stdoutR, stdoutW := io.Pipe()
-	defer stdinW.Close()
-	defer stdoutR.Close()
-	type outcome struct {
-		result faden.Result
-		err    error
-	}
-	done := make(chan outcome, 1)
-	go func() {
-		res, err := b.cfg.Runtime.Run(runCtx, faden.Command{Key: t.RequestID, Argv: argv, Env: setup.Env, Stdin: stdinR, Stdout: stdoutW, MaxOutput: maxStderr})
-		stdinR.Close()
-		stdoutW.CloseWithError(err)
-		done <- outcome{res, err}
-	}()
-
-	x.conn = &conn{stdin: stdinW, cancel: cancel}
-	defer b.track(ctx, runCtx, t.RequestID, x.conn)()
-	finish := func(ended bool, runErr error) error {
-		stdinW.Close()
-		// Nothing reads stdout from here on. Closed, it fails the runtime's
-		// copy of what the agent still writes, instead of blocking it forever.
-		stdoutR.Close()
-		var out outcome
-		if ended && runErr == nil {
-			select {
-			case out = <-done:
-			case <-time.After(graceAfterTurn):
-				cancel()
-				out = <-done
-			}
-			// The agent exited, or was stopped after its prompt ended; either way the turn is complete.
-			out.err = nil
-		} else {
-			cancel()
-			out = <-done
-		}
-		if runErr != nil {
-			return fmt.Errorf("acp: %w", runErr)
-		}
-		if out.err != nil {
-			return fmt.Errorf("acp: run: %w", out.err)
-		}
-		if !ended {
-			return fmt.Errorf("acp: agent exited before the prompt ended (exit code %d): %s", out.result.ExitCode, strings.TrimSpace(string(out.result.Output)))
-		}
-		return nil
-	}
-
+	c.Proc, x.conn = proc, c
 	initialize := map[string]any{
 		"protocolVersion":    1,
 		"clientCapabilities": map[string]any{"fs": map[string]bool{"readTextFile": false, "writeTextFile": false}, "terminal": false},
 		"clientInfo":         map[string]string{"name": "faden", "version": "1"},
 	}
-	if err := x.conn.request(idInitialize, "initialize", initialize); err != nil {
-		return finish(false, err)
-	}
-	scan := bufio.NewScanner(stdoutR)
-	scan.Buffer(make([]byte, 4096), 16*1024*1024)
 	ended := false
-	var runErr error
-	for runErr == nil && !ended && scan.Scan() {
-		var m message
-		if err := json.Unmarshal(scan.Bytes(), &m); err != nil {
-			runErr = err
-			break
-		}
-		ended, runErr = x.handle(m)
+	runErr := c.request(idInitialize, "initialize", initialize)
+	if runErr == nil {
+		ended, runErr = proc.Read(func(line []byte) (bool, error) {
+			var m message
+			if err := json.Unmarshal(line, &m); err != nil {
+				return false, err
+			}
+			return x.handle(m)
+		})
 	}
-	if runErr == nil && !ended {
-		runErr = scan.Err()
-		if runErr != nil {
-			runErr = fmt.Errorf("stream: %w", runErr)
-		}
+	// The agent exits, or is stopped, after its prompt ended; either way the
+	// turn is complete.
+	res, procErr := proc.Close(ended && runErr == nil)
+	switch {
+	case runErr != nil:
+		return fmt.Errorf("acp: %w", runErr)
+	case procErr != nil:
+		return fmt.Errorf("acp: run: %w", procErr)
+	case !ended:
+		return fmt.Errorf("acp: agent exited before the prompt ended (exit code %d): %s", res.ExitCode, strings.TrimSpace(string(res.Output)))
 	}
-	return finish(ended, runErr)
+	return nil
 }
 
 // promptText is the text of session/prompt: the catch-up, context and input,
@@ -245,55 +181,16 @@ func promptText(ctx context.Context, t faden.Turn, a *faden.Attempt, dir string)
 	return attach.WithLines(prompt, paths), nil
 }
 
-// track lets Stop cancel c while the attempt of requestID runs, and cancels
-// c when ctx ends before runCtx does. Call the returned func when the
-// attempt ends.
-func (b *Backend) track(ctx, runCtx context.Context, requestID string, c *conn) (untrack func()) {
-	b.mu.Lock()
-	b.active[requestID] = c.interrupt
-	b.mu.Unlock()
-	watched := make(chan struct{})
-	go func() {
-		defer close(watched)
-		select {
-		case <-ctx.Done():
-			c.interrupt()
-		case <-runCtx.Done():
-		}
-	}()
-	return func() {
-		c.cancel()
-		<-watched
-		b.mu.Lock()
-		delete(b.active, requestID)
-		b.mu.Unlock()
-	}
-}
-
-// conn is one attempt's JSON-RPC conversation with an agent. It owns the
-// write side of the pipe and the session id, under one lock, so a cancel
-// sent from another goroutine never interleaves with a request.
+// conn is one attempt's conversation with an agent. It keeps the session
+// id, so an interrupt can name the session.
 type conn struct {
-	mu        sync.Mutex // guards writes to stdin and sessionID
-	stdin     *os.File
+	*agentproc.Proc
+	mu        sync.Mutex // guards sessionID
 	sessionID string
-	cancel    context.CancelFunc // stops the agent
-	once      sync.Once
-}
-
-func (c *conn) send(v map[string]any) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	data, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-	_, err = c.stdin.Write(append(data, '\n'))
-	return err
 }
 
 func (c *conn) request(id int, method string, params any) error {
-	return c.send(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+	return c.Send(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params})
 }
 
 func (c *conn) setSession(id string) {
@@ -302,21 +199,14 @@ func (c *conn) setSession(id string) {
 	c.mu.Unlock()
 }
 
-// interrupt sends session/cancel for the session, if it is known, and then
-// stops the agent. Only the first call does anything.
-func (c *conn) interrupt() {
-	c.once.Do(func() {
-		// Release a blocked prompt write before waiting for the lock.
-		c.stdin.SetWriteDeadline(time.Now().Add(time.Second))
-		c.mu.Lock()
-		if c.sessionID != "" {
-			data, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": "session/cancel", "params": map[string]string{"sessionId": c.sessionID}})
-			c.stdin.SetWriteDeadline(time.Now().Add(time.Second))
-			c.stdin.Write(append(data, '\n'))
-		}
-		c.mu.Unlock()
-		c.cancel()
-	})
+// interruptMessage is session/cancel for the session, or nil before it is known.
+func (c *conn) interruptMessage() any {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.sessionID == "" {
+		return nil
+	}
+	return map[string]any{"jsonrpc": "2.0", "method": "session/cancel", "params": map[string]string{"sessionId": c.sessionID}}
 }
 
 // toolCall is what the agent has said so far about one tool call.
@@ -354,7 +244,7 @@ type exchange struct {
 func (x *exchange) handle(m message) (bool, error) {
 	switch {
 	case m.Method != "" && len(m.ID) > 0:
-		return false, x.conn.send(x.reply(m))
+		return false, x.conn.Send(x.reply(m))
 	case m.Method == "session/update":
 		if !x.prompting {
 			return false, nil
