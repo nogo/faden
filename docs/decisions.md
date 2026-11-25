@@ -425,7 +425,8 @@ Rejected: replacing the `claude` and `codex` backends with their ACP adapters. O
 - **A backend returns `*faden.RejectedError`** when the provider refused the request as sent. faden does not parse provider text to guess which part it refused.
 - **`Turn.Error` is display text.** Response bodies stay out of it, because they can echo credentials.
 - **llama:** 400 and 422 after the call are `rejected`, without a retry. Codex and ACP `-32602` (invalid params) wait for a recorded case.
-- Open: ACP puts the agent's stderr (up to 64 KiB) into the error when the agent exits early, and Codex and ACP copy JSON-RPC error messages. Both break the display-text rule.
+- ~~Open: ACP puts the agent's stderr (up to 64 KiB) into the error when the agent exits early, and Codex and ACP copy JSON-RPC error messages. Both break the display-text rule.~~ *Settled 2026-11-25:*
+- **No agent's own text reaches `Turn.Error`.** ACP's early exit names its exit code, a JSON-RPC error its request id and code, a failed Codex turn its `codexErrorInfo` kind when that is a plain name, and Claude's missing login the fixed reason "not logged in". **A host that wants stderr wraps its `Runtime`:** `Result.Output` holds it, capped, before the backend sees it. Rejected: a diagnostics hook in faden. It would hand possible secrets to host code that faden cannot check, and a slow or waiting hook could stall or deadlock a turn; the `Runtime` seam already exists.
 
 Rejected: one kind per provider error. Providers rename their errors, and each kind is a promise to every host.
 

@@ -148,7 +148,7 @@ func TestFailureKinds(t *testing.T) {
 		t.Fatalf("not logged in: %v", err)
 	}
 	err = parseAll(t, `{"type":"result","is_error":true,"result":"Not logged in · Please run /login"}`)
-	if !errors.As(err, &unavailable) {
+	if !errors.As(err, &unavailable) || unavailable.Reason != "not logged in" {
 		t.Fatalf("not logged in, result only: %v", err)
 	}
 	err = parseAll(t, `{"type":"result","is_error":true,"result":"boom"}`)

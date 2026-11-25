@@ -156,7 +156,8 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 	case procErr != nil:
 		return fmt.Errorf("acp: run: %w", procErr)
 	case !ended:
-		return fmt.Errorf("acp: agent exited before the prompt ended (exit code %d): %s", res.ExitCode, strings.TrimSpace(string(res.Output)))
+		// Its stderr stays out of the error: a host that wants it wraps its Runtime.
+		return fmt.Errorf("acp: agent exited before the prompt ended (exit code %d)", res.ExitCode)
 	}
 	return nil
 }
@@ -253,7 +254,9 @@ func (x *exchange) handle(m message) (bool, error) {
 	case m.Method != "":
 		return false, nil
 	case m.Error != nil:
-		err := fmt.Errorf("request %s failed: %s", m.ID, m.Error.Message)
+		// The message is the agent's own text and can echo what it was sent;
+		// the code is the protocol's.
+		err := fmt.Errorf("request %s failed (code %d)", m.ID, m.Error.Code)
 		if m.Error.Code == codeAuthRequired {
 			return false, fmt.Errorf("%w: %w", err, &faden.UnavailableError{Reason: "agent requires authentication"})
 		}

@@ -229,7 +229,7 @@ func TestHandoverPutsCatchUpBeforeRequest(t *testing.T) {
 
 func TestFailures(t *testing.T) {
 	cases := map[string]string{
-		"turn failed":   `{"method":"turn/completed","params":{"turn":{"status":"failed","error":{"message":"invented failure"}}}}` + "\n",
+		"turn failed":   `{"method":"turn/completed","params":{"turn":{"status":"failed","error":{"message":"invented failure","codexErrorInfo":"contextWindowExceeded"}}}}` + "\n",
 		"no completion": `{"method":"item/completed","params":{"item":{"type":"agentMessage","text":"x"}}}` + "\n",
 		"malformed":     "{\n",
 		"thread error":  "",
@@ -238,15 +238,26 @@ func TestFailures(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			dir := setup(t, fixture)
 			if name == "thread error" {
-				script := "#!/bin/sh\nread line\necho '{\"id\":1,\"error\":{\"message\":\"invented\"}}'\ncat >/dev/null\n"
+				script := "#!/bin/sh\nread line\necho '{\"id\":1,\"error\":{\"code\":-32600,\"message\":\"invented failure\"}}'\ncat >/dev/null\n"
 				os.WriteFile(filepath.Join(dir, "codex"), []byte(script), 0700)
 			}
 			b, store := newBackend(t, dir)
 			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 			defer cancel()
 			turn := faden.Turn{Session: "s", RequestID: "r", Input: "x"}
-			if err := b.Run(ctx, turn, newAttempt(t, store, turn)); err == nil {
+			err := b.Run(ctx, turn, newAttempt(t, store, turn))
+			if err == nil {
 				t.Fatal("want an error")
+			}
+			// Codex's own message text stays out of the error; protocol codes stay in.
+			if strings.Contains(err.Error(), "invented failure") {
+				t.Fatalf("error carries Codex's message: %v", err)
+			}
+			if name == "turn failed" && !strings.Contains(err.Error(), "contextWindowExceeded") {
+				t.Fatalf("error lost the error kind: %v", err)
+			}
+			if name == "thread error" && !strings.Contains(err.Error(), "code -32600") {
+				t.Fatalf("error lost the code: %v", err)
 			}
 		})
 	}

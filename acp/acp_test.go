@@ -320,10 +320,15 @@ func TestFailures(t *testing.T) {
 			_, ok := errors.AsType[*faden.UnavailableError](err)
 			return ok
 		}},
+		"request error": {loadCaps, `{"jsonrpc":"2.0","id":3,"error":{"code":-32602,"message":"invented secret echo"}}` + "\n", func(err error) bool {
+			return strings.Contains(err.Error(), "code -32602") && !strings.Contains(err.Error(), "invented secret echo")
+		}},
 		"other version": {`{"protocolVersion":2}`, "", func(err error) bool {
 			return strings.Contains(err.Error(), "ACP version 2")
 		}},
-		"no end":    {loadCaps, `{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"x"}}}}` + "\n", nil},
+		"no end": {loadCaps, `{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"x"}}}}` + "\n", func(err error) bool {
+			return strings.Contains(err.Error(), "exit code 3") && !strings.Contains(err.Error(), "invented stderr")
+		}},
 		"malformed": {loadCaps, "{\n", nil},
 	}
 	for name, c := range cases {
@@ -331,7 +336,7 @@ func TestFailures(t *testing.T) {
 			dir := setup(t, c.caps, c.fixture)
 			if name == "no end" {
 				// The agent exits after its last line, without a prompt answer.
-				script := strings.Replace(fakeAgent, `*'"method":"session/prompt"'*) cat fixture ;;`, `*'"method":"session/prompt"'*) cat fixture; exit 3 ;;`, 1)
+				script := strings.Replace(fakeAgent, `*'"method":"session/prompt"'*) cat fixture ;;`, `*'"method":"session/prompt"'*) cat fixture; echo invented stderr >&2; exit 3 ;;`, 1)
 				os.WriteFile(filepath.Join(dir, "agent"), []byte(script), 0700)
 			}
 			b, store := newBackend(t, dir, Config{})

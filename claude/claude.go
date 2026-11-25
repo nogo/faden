@@ -421,7 +421,8 @@ func (s *output) failure(result string) error {
 		return q
 	}
 	if s.apiError == "authentication_failed" || strings.HasPrefix(result, "Not logged in") {
-		return &faden.UnavailableError{Reason: result}
+		// A fixed reason: the result is Claude's own text.
+		return &faden.UnavailableError{Reason: "not logged in"}
 	}
 	return errors.New("Claude reported an unsuccessful turn")
 }

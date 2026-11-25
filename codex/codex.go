@@ -113,7 +113,7 @@ type message struct {
 	Params json.RawMessage `json:"params"`
 	Result json.RawMessage `json:"result"`
 	Error  *struct {
-		Message string `json:"message"`
+		Code int `json:"code"`
 	} `json:"error"`
 }
 
@@ -282,7 +282,9 @@ func (x *exchange) handle(m message) (bool, error) {
 		x.limits.note(m)
 		return notification(m, x.emit, &x.limits)
 	case m.Error != nil:
-		return false, fmt.Errorf("request %s failed: %s", m.ID, m.Error.Message)
+		// The message is Codex's own text and can echo what it was sent; the
+		// code is the protocol's.
+		return false, fmt.Errorf("request %s failed (code %d)", m.ID, m.Error.Code)
 	}
 	return false, x.answer(m)
 }
@@ -447,7 +449,6 @@ func notification(m message, emit func(faden.Event) error, limits *limitState) (
 			Turn struct {
 				Status string `json:"status"`
 				Error  *struct {
-					Message        string          `json:"message"`
 					CodexErrorInfo json.RawMessage `json:"codexErrorInfo"`
 				} `json:"error"`
 			} `json:"turn"`
@@ -459,10 +460,15 @@ func notification(m message, emit func(faden.Event) error, limits *limitState) (
 			return false, err
 		}
 		if p.Turn.Status != "completed" {
+			// The error's message is Codex's own text and stays out; its kind,
+			// when it is a plain name, is the protocol's.
 			msg := "turn " + p.Turn.Status
 			if p.Turn.Error != nil {
-				msg += ": " + p.Turn.Error.Message
-				if string(p.Turn.Error.CodexErrorInfo) == `"usageLimitExceeded"` {
+				var kind string
+				if json.Unmarshal(p.Turn.Error.CodexErrorInfo, &kind) == nil && kind != "" {
+					msg += " (" + kind + ")"
+				}
+				if kind == "usageLimitExceeded" {
 					return true, fmt.Errorf("codex: %s: %w", msg, &faden.QuotaError{ResetsAt: limits.resetsAt, LimitType: limits.limitType})
 				}
 			}
