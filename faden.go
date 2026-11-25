@@ -86,8 +86,9 @@ type Progress struct {
 	Status   Status `json:"status"`
 	Attempts int    `json:"attempts"`
 	Error    string `json:"error,omitempty"`
-	// Failure says why a failed turn failed: "" for the agent or anything else,
-	// FailureQuota or FailureUnavailable. RetryAt and LimitType hold what the
+	// Failure says what the host can do about a failed turn: "" for the agent
+	// or anything else, FailureQuota, FailureUnavailable or FailureRejected.
+	// RetryAt and LimitType hold what the
 	// backend knew of a quota stop; they are zero when unknown.
 	Failure   FailureKind `json:"failure,omitempty"`
 	RetryAt   time.Time   `json:"retryAt,omitempty"`
@@ -203,15 +204,21 @@ type Backend interface {
 	Run(ctx context.Context, t Turn, a *Attempt) error
 }
 
-// FailureKind tells a host why a turn failed, so it can wait instead of
-// blaming the agent.
+// FailureKind names the host's next action for a failed turn. A failed turn
+// is final: faden already retried what a retry can fix. A kind is added only
+// for a new host action, never for a new provider error.
 type FailureKind string
 
 // The kinds of failure beyond the agent's own. The host decides when to send
 // a new turn; the runner never waits.
 const (
-	FailureQuota       FailureKind = "quota"
+	// FailureQuota: wait until RetryAt, or pick another model.
+	FailureQuota FailureKind = "quota"
+	// FailureUnavailable: fix the setup (login, endpoint, binary).
 	FailureUnavailable FailureKind = "unavailable"
+	// FailureRejected: the backend refused the request as sent. The same
+	// turn fails again; change its effort, model or input and resend.
+	FailureRejected FailureKind = "rejected"
 )
 
 // QuotaError is what a backend returns when the provider refuses work until
@@ -239,3 +246,11 @@ type UnavailableError struct {
 }
 
 func (e *UnavailableError) Error() string { return "faden: agent unavailable: " + e.Reason }
+
+// RejectedError is what a backend returns when the provider refused the
+// request as sent, such as an effort the model does not support.
+type RejectedError struct {
+	Reason string
+}
+
+func (e *RejectedError) Error() string { return "faden: request rejected: " + e.Reason }

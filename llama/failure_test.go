@@ -1,6 +1,7 @@
 package llama_test
 
 import (
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -36,7 +37,7 @@ func TestQuotaAfterRetriesCarriesRetryAfter(t *testing.T) {
 func TestOtherServerErrorIsNotAKind(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadRequest)
+		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer srv.Close()
 	b, err := llama.New(llama.Config{URL: srv.URL + "/v1"})
@@ -65,5 +66,29 @@ func TestRefusedConnectionAfterRetriesIsUnavailable(t *testing.T) {
 	got := run(t, openStore(t, t.TempDir()), b, "r1", "hi")
 	if got.Status != faden.Failed || got.Failure != faden.FailureUnavailable {
 		t.Fatalf("turn = %+v", got)
+	}
+}
+
+// TestRefusedRequestIsRejected covers an effort the chat template refuses:
+// llama-server answers 400 and names the levels it supports.
+func TestRefusedRequestIsRejected(t *testing.T) {
+	t.Parallel()
+	for _, status := range []int{http.StatusBadRequest, http.StatusUnprocessableEntity} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			t.Parallel()
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(status)
+				io.WriteString(w, `{"error":{"code":400,"message":"invented: reasoning_effort 'max' is not supported, use one of low, high","type":"invalid_request_error"}}`)
+			}))
+			defer srv.Close()
+			b, err := llama.New(llama.Config{URL: srv.URL + "/v1"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := run(t, openStore(t, t.TempDir()), b, "r1", "hi")
+			if got.Status != faden.Failed || got.Failure != faden.FailureRejected || !got.RetryAt.IsZero() {
+				t.Fatalf("turn = %+v", got)
+			}
+		})
 	}
 }

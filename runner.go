@@ -717,11 +717,14 @@ func (r *Runner) run(t Turn) error {
 	if runErr != nil {
 		var quota *QuotaError
 		var unavailable *UnavailableError
+		var rejected *RejectedError
 		switch {
 		case errors.As(runErr, &quota):
 			t.Failure, t.RetryAt, t.LimitType = FailureQuota, quota.ResetsAt, quota.LimitType
 		case errors.As(runErr, &unavailable):
 			t.Failure = FailureUnavailable
+		case errors.As(runErr, &rejected):
+			t.Failure = FailureRejected
 		}
 		return r.finish(t, Failed, runErr.Error())
 	}

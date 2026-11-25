@@ -510,6 +510,7 @@ func TestFailureKindIsStoredWithTheTurn(t *testing.T) {
 	}{
 		"quota":       {fmt.Errorf("wrapped: %w", &faden.QuotaError{ResetsAt: resets, LimitType: "five_hour"}), faden.Turn{Failure: faden.FailureQuota, RetryAt: resets, LimitType: "five_hour"}},
 		"unavailable": {&faden.UnavailableError{Reason: "not logged in"}, faden.Turn{Failure: faden.FailureUnavailable}},
+		"rejected":    {fmt.Errorf("wrapped: %w", &faden.RejectedError{Reason: "bad effort"}), faden.Turn{Failure: faden.FailureRejected}},
 		"agent":       {errors.New("boom"), faden.Turn{}},
 	}
 	for name, c := range cases {

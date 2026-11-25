@@ -244,7 +244,7 @@ Rejected: usage on each event, which grows with tool activity; keeping native CL
 
 ## Decided 2026-11-02 — failure kinds (#27)
 
-**`Turn.Failure` says why a turn failed: `""` (agent or other), `"quota"` or `"unavailable"`.** `Turn.RetryAt` and `Turn.LimitType` hold the reset time and limit name of a quota stop, when the backend knew them. A backend returns `*faden.QuotaError` or `*faden.UnavailableError`, wrapped or not. The runner finds it with `errors.As` and stores the kind with the failed turn. `Turn.Error` keeps the text.
+**`Turn.Failure` says why a turn failed: `""` (agent or other), `"quota"` or `"unavailable"`.** `Turn.RetryAt` and `Turn.LimitType` hold the reset time and limit name of a quota stop, when the backend knew them. A backend returns `*faden.QuotaError` or `*faden.UnavailableError`, wrapped or not. The runner finds it with `errors.As` and stores the kind with the failed turn. `Turn.Error` keeps the text. *Extended 2026-11-25 with `"rejected"`; see "Decided 2026-11-25 — failures".*
 
 **The host decides when to send a new turn.** The runner never waits for a reset. The host owns the schedule, and the container host already has its breaker.
 
@@ -415,3 +415,15 @@ Rejected: an opaque `Turn.Meta` for host data. It had no user beside effort, and
 Tested with a fake agent and invented lines (`go test ./acp`), including a host killed with SIGKILL that continues through `session/load`. No live ACP agent was run: none is installed on the test machine.
 
 Rejected: replacing the `claude` and `codex` backends with their ACP adapters. One package would cover all agents, but the continuation measured on each native CLI would have to be measured again through an adapter.
+
+## Decided 2026-11-25 — failures
+
+**A failed turn is final: faden already retried what a retry can fix.** A backend retries transient faults inside the attempt (llama: 429, 5xx, a dropped connection); the runner continues a turn after a restart. The host never retries a `Failed` turn blindly.
+
+- **`Turn.Failure` names the host's next action, not the cause.** `quota`: wait or pick another model. `unavailable`: fix the setup. `rejected`: change the request (effort, model, input) and resend. `""`: show the text. A kind is added only for a new host action.
+- **A backend returns `*faden.RejectedError`** when the provider refused the request as sent. faden does not parse provider text to guess which part it refused.
+- **`Turn.Error` is display text.** Response bodies stay out of it, because they can echo credentials.
+- **llama:** 400 and 422 after the call are `rejected`, without a retry. Codex and ACP `-32602` (invalid params) wait for a recorded case.
+- Open: ACP puts the agent's stderr (up to 64 KiB) into the error when the agent exits early, and Codex and ACP copy JSON-RPC error messages. Both break the display-text rule.
+
+Rejected: one kind per provider error. Providers rename their errors, and each kind is a promise to every host.

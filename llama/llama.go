@@ -489,9 +489,13 @@ type httpError struct{ status int }
 func (e *httpError) Error() string { return fmt.Sprintf("llama: model answered %d", e.status) }
 
 // finalError names a failure that survived the retries. A 429 is a quota stop,
-// with the reset taken from Retry-After when the endpoint sent it.
+// with the reset taken from Retry-After when the endpoint sent it. A 400 or
+// 422 refuses the request itself, such as an effort the template rejects.
 func finalError(err error, delay time.Duration) error {
 	var h *httpError
+	if errors.As(err, &h) && (h.status == http.StatusBadRequest || h.status == http.StatusUnprocessableEntity) {
+		return fmt.Errorf("%w: %w", err, &faden.RejectedError{Reason: "the model server refused the request"})
+	}
 	if errors.As(err, &h) && h.status == http.StatusTooManyRequests {
 		q := &faden.QuotaError{}
 		if delay > 0 {
