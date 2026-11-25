@@ -197,8 +197,13 @@ const (
 	ThreadToolSchema      = `{"type":"object","properties":{"from":{"type":"integer"},"to":{"type":"integer"}},"required":["from","to"]}`
 )
 
-// maxThreadItems bounds one ReadThread answer.
-const maxThreadItems = 100
+// maxThreadItems and maxThreadBytes bound one ReadThread answer. The byte
+// bound is soft: an answer stops once it reaches it, so one event larger
+// than the bound is still answered whole and a reader always moves on.
+const (
+	maxThreadItems = 100
+	maxThreadBytes = 64 << 10
+)
 
 // Events reads a session's next event after a sequence number, or nil when
 // none is left. A faden.Store implements it.
@@ -208,8 +213,9 @@ type Events interface {
 
 // ReadThread runs ThreadTool for session own. args holds from, to and an
 // optional session, which must be own. The answer has one JSON event per
-// line, without native payloads, and at most 100 events; a last line says
-// where to continue. It holds one event at a time, whatever the range.
+// line, without native payloads, at most 100 events, and stops once it
+// holds 64 KB; a last line says where to continue. It reads one event at a
+// time, whatever the range.
 func ReadThread(ctx context.Context, events Events, own string, args json.RawMessage) (string, error) {
 	var a struct {
 		Session string `json:"session"`
@@ -233,7 +239,7 @@ func ReadThread(ctx context.Context, events Events, own string, args json.RawMes
 		if e == nil || e.Seq > a.To {
 			break
 		}
-		if n == maxThreadItems {
+		if n == maxThreadItems || b.Len() >= maxThreadBytes {
 			fmt.Fprintf(&b, "[cut: ask again from %d]\n", e.Seq)
 			break
 		}

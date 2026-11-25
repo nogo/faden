@@ -1,6 +1,7 @@
 package handover_test
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -62,9 +63,11 @@ func TestFailedToolResultSaysSo(t *testing.T) {
 }
 
 // countingEvents serves n invented events and counts how many were read.
+// Each has output as its Output, or "out" when output is empty.
 type countingEvents struct {
-	n    int64
-	read int
+	n      int64
+	read   int
+	output string
 }
 
 func (c *countingEvents) NextEvent(_ context.Context, _ string, after int64) (*faden.Event, error) {
@@ -72,7 +75,31 @@ func (c *countingEvents) NextEvent(_ context.Context, _ string, after int64) (*f
 		return nil, nil
 	}
 	c.read++
-	return &faden.Event{Seq: after + 1, Kind: faden.ToolResult, Output: "out"}, nil
+	return &faden.Event{Seq: after + 1, Kind: faden.ToolResult, Output: cmp.Or(c.output, "out")}, nil
+}
+
+func TestReadThreadStopsNearItsByteBound(t *testing.T) {
+	events := &countingEvents{n: 100, output: strings.Repeat("x", 30<<10)}
+	got, err := handover.ReadThread(context.Background(), events, "s", json.RawMessage(`{"from":1,"to":100}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(got, "\n")
+	if len(lines) != 4 || lines[3] != "[cut: ask again from 4]" {
+		t.Fatalf("got %d lines, last %.80q", len(lines), lines[len(lines)-1])
+	}
+}
+
+func TestReadThreadAnswersOneEventLargerThanItsBound(t *testing.T) {
+	events := &countingEvents{n: 2, output: strings.Repeat("x", 200<<10)}
+	got, err := handover.ReadThread(context.Background(), events, "s", json.RawMessage(`{"from":1,"to":2}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(got, "\n")
+	if len(lines) != 2 || !strings.Contains(lines[0], `"seq":1`) || lines[1] != "[cut: ask again from 2]" {
+		t.Fatalf("got %d lines, last %.80q", len(lines), lines[len(lines)-1])
+	}
 }
 
 func TestReadThreadReadsOnlyWhatItAnswers(t *testing.T) {
