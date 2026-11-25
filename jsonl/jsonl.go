@@ -670,6 +670,7 @@ func (s *Store) Close() error {
 		errs = append(errs, sess.file.Close())
 	}
 	s.sessions = map[string]*session{}
+	s.turns = map[string]faden.Turn{}
 	errs = append(errs, s.lock.Close())
 	return errors.Join(errs...)
 }

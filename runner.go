@@ -482,7 +482,7 @@ func (r *Runner) kick(session string) error {
 			r.store.Release(context.WithoutCancel(r.ctx), session)
 		}
 		r.mu.Lock()
-		r.active[session] = false
+		delete(r.active, session)
 		r.mu.Unlock()
 		r.wg.Done()
 		return err
@@ -502,7 +502,7 @@ func (r *Runner) work(session string) {
 	// worker still active leaves its turn to the check below.
 	r.store.Release(context.WithoutCancel(r.ctx), session)
 	r.mu.Lock()
-	r.active[session] = false
+	delete(r.active, session)
 	r.mu.Unlock()
 	switch {
 	case errors.Is(err, ErrLocked):
