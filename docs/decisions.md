@@ -389,7 +389,8 @@ Rejected: a new `Runner.Send` beside `Submit`. One entry point with an option wa
 **`Submission.Effort` and `Turn.Effort` hold the backend's reasoning level, beside `Model`.** The submission fixes it, and every store keeps it with the turn. The chat host lets its user pick an effort per message. A turn that continues after a restart must run with the same effort, so the host cannot pass it again on each attempt.
 
 - **faden passes the string through unchecked.** The levels differ per backend: Claude takes `max`, Codex does not. The host keeps the lists and checks a level before it submits. Empty means the backend's default.
-- **Claude** gets `--effort <level>`. **Codex** gets `effort` in the `turn/start` params. **llama** ignores it.
+- ~~**Claude** gets `--effort <level>`. **Codex** gets `effort` in the `turn/start` params. **llama** ignores it.~~ *Changed 2026-11-25: the chat host offers effort for local models too.*
+- **Claude** gets `--effort <level>`. **Codex** gets `effort` in the `turn/start` params. **llama** sends `reasoning_effort` in every chat-completions request; no field when the effort is empty. llama-server (b12723) hands the value to the chat template, turns thinking off for `"none"`, and answers 400 for a level the template refuses; `GET /props` lists the levels per model.
 - **Steering joins only a running turn with the same effort,** as with the model. Otherwise the input is queued as its own turn.
 - Checked against the installed binaries, not a live turn: `claude --help` (2.1.322) lists `--effort <level>` with low, medium, high, xhigh, max. The schema from `codex app-server generate-json-schema` (0.167.1) has an optional `effort` in `TurnStartParams`, a non-empty string, described as "Override the reasoning effort for this turn and subsequent turns."
 - Open: Codex says the effort holds for later turns too. Whether a later turn without an effort, on a resumed thread, keeps the earlier level is not measured.

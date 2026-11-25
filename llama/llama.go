@@ -302,7 +302,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 		if step++; step > b.cfg.MaxSteps {
 			return fmt.Errorf("llama: no final answer after %d model calls", b.cfg.MaxSteps)
 		}
-		response, err := b.complete(ctx, model, tools, system(a.Setup().System, tr.messages))
+		response, err := b.complete(ctx, model, t.Effort, tools, system(a.Setup().System, tr.messages))
 		if err != nil {
 			return err
 		}
@@ -383,7 +383,7 @@ func (b *Backend) execute(ctx context.Context, tools map[string]Tool, tr *transc
 }
 
 // complete asks the server for the next assistant message.
-func (b *Backend) complete(ctx context.Context, model string, tools map[string]Tool, msgs []message) (answer completion, callErr error) {
+func (b *Backend) complete(ctx context.Context, model, effort string, tools map[string]Tool, msgs []message) (answer completion, callErr error) {
 	defer func() {
 		if callErr != nil && b.cfg.Key != "" && strings.Contains(callErr.Error(), b.cfg.Key) {
 			callErr = errors.New(strings.ReplaceAll(callErr.Error(), b.cfg.Key, "[redacted]"))
@@ -407,7 +407,10 @@ func (b *Backend) complete(ctx context.Context, model string, tools map[string]T
 		Messages  []message `json:"messages"`
 		Tools     []toolDef `json:"tools,omitempty"`
 		MaxTokens int       `json:"max_tokens,omitempty"`
-	}{model, msgs, defs, b.cfg.MaxTokens})
+		// Effort passes through unchecked; llama-server answers 400 when the
+		// chat template refuses it, and "none" turns thinking off.
+		Effort string `json:"reasoning_effort,omitempty"`
+	}{model, msgs, defs, b.cfg.MaxTokens, effort})
 	if err != nil {
 		return completion{}, fmt.Errorf("llama: encode request: %w", err)
 	}
