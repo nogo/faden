@@ -139,6 +139,7 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 		data, _ := json.Marshal(c)
 		return a.SaveCursor(ctx, data)
 	}
+	savedAssistantID := c.LastAssistantID
 	if err := save(); err != nil {
 		return fmt.Errorf("claude: checkpoint: %w", err)
 	}
@@ -236,7 +237,8 @@ func (b *Backend) Run(ctx context.Context, t faden.Turn, a *faden.Attempt) error
 			break
 		}
 		err := st.line(scan.Bytes())
-		if err == nil && c.LastAssistantID != "" {
+		if err == nil && c.LastAssistantID != savedAssistantID {
+			savedAssistantID = c.LastAssistantID
 			err = save()
 		}
 		if err != nil {

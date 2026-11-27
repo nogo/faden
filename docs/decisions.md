@@ -441,3 +441,12 @@ A host runs faden for months. Memory may grow with the number of sessions, turns
 - **`jsonl` keeps a session's file open only while it owns the session.** Other reads and writes open the file for the call; `Events` always reads through its own handle, so `Release` and `Close` never close a file under a reader. Measured: 2,000 served sessions held 2,008 open files before, 8 after. `TestOnlyOwnedSessionsKeepAFileOpen` guards it. The cost is one `open` per read or write of a session this process does not own.
 
 - **`internal/agentproc` owns the agent process of `codex` and `acp`:** its pipes, serialized writes, the interrupt when the attempt's context ends, the grace after a turn ends, and the map of running attempts that `Stop` interrupts. Each backend keeps its protocol: requests, its interrupt message, its reply loop and its errors. Before, both packages held the same 150 lines, so a shutdown fix needed two edits. `claude` stays apart: it streams images into stdin, takes steering and has no interrupt message.
+
+## Decided 2026-11-27 — when a backend saves its cursor
+
+A host may store every `SaveCursor` call, so a backend saves only a cursor that differs from the last one it saved. Before, Claude saved on every stdout line after the first assistant message: 15,056 of 15,155 records on one day repeated the record before.
+
+- **claude:** once before launch, then on the line that carries a new `last_assistant_id`. A crash mid-turn keeps the last id seen. `TestCursorIsSavedOnlyWhenTheAssistantIDChanges` counts three saves for two assistant messages and 40 partial-message lines.
+- **codex:** once, when `thread/start` answers. A resumed thread saves nothing.
+- **acp:** once, when `session/new` answers. A resumed session saves nothing.
+- Stores do not deduplicate. A host-side store may add its own guard.

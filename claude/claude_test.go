@@ -523,3 +523,40 @@ func TestLongOutputLinePasses(t *testing.T) {
 		t.Fatalf("events: %d, %v", len(events), err)
 	}
 }
+
+type countingStore struct {
+	faden.Store
+	saves int
+}
+
+func (s *countingStore) SetCursor(ctx context.Context, session, backend string, cursor json.RawMessage) error {
+	s.saves++
+	return s.Store.SetCursor(ctx, session, backend, cursor)
+}
+
+func TestCursorIsSavedOnlyWhenTheAssistantIDChanges(t *testing.T) {
+	dir := t.TempDir()
+	partial := `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"x"}}}` + "\n"
+	fixture := strings.Replace(stream, `{"type":"user"`, strings.Repeat(partial, 20)+`{"type":"user"`, 1)
+	fixture = strings.Replace(fixture, `{"type":"result"`, strings.Repeat(partial, 20)+`{"type":"result"`, 1)
+	program := "#!/bin/sh\nIFS= read -r line\ncat fixture\n"
+	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(program), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "fixture"), []byte(fixture), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	store := &countingStore{Store: openStore(t, filepath.Join(dir, "store"))}
+	b, err := New(Config{Runtime: faden.Local{PIDDir: dir, Dir: dir, Env: os.Environ()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn := faden.Turn{Session: "s", RequestID: "r1", Input: "Read greeting.txt"}
+	if err := b.Run(t.Context(), turn, newAttempt(t, store, turn)); err != nil {
+		t.Fatal(err)
+	}
+	if store.saves != 3 {
+		t.Fatalf("SetCursor calls = %d, want 3 (launch plus two assistant messages)", store.saves)
+	}
+}

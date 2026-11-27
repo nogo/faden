@@ -99,8 +99,12 @@ func TestLocalKillsDeadHostsGroupBeforeContinuation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// The leftovers' parent died, so init reaps them and kill finds no process.
-			return errors.Is(syscall.Kill(id, 0), syscall.ESRCH)
+			// The leftovers' parent died. Init reaps them, or in a container without a reaping init they stay zombies.
+			if errors.Is(syscall.Kill(id, 0), syscall.ESRCH) {
+				return true
+			}
+			stat, err := os.ReadFile("/proc/" + pid + "/stat")
+			return err == nil && strings.Contains(string(stat), ") Z")
 		})
 	}
 }
